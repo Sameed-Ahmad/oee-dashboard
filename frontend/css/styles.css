@@ -360,7 +360,7 @@ h1, h2, h3, .font-display {
 
 .panel .chart-wrap {
   position: relative;
-  height: 240px;
+  height: 300px;
 }
 
 .callout-line {
@@ -567,14 +567,6 @@ h1, h2, h3, .font-display {
 .downtime-modal-box .chart-wrap {
   position: relative;
   height: 320px;
-}
-
-/* ---------- Footer note ---------- */
-.footer-note {
-  margin-top: 24px;
-  font-size: 11px;
-  color: var(--muted);
-  text-align: center;
 }
 
 /* ---------- Responsive ---------- */

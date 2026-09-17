@@ -59,6 +59,7 @@ const Charts = (() => {
         indexAxis: "y",
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: "nearest", axis: "y", intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -74,7 +75,7 @@ const Charts = (() => {
             grid: { color: cssVar("--border") },
           },
           y: {
-            ticks: { font: baseFont() },
+            ticks: { font: baseFont(), autoSkip: false },
             grid: { display: false },
           },
         },
