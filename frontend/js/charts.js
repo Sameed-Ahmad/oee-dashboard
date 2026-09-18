@@ -40,19 +40,25 @@ const Charts = (() => {
       .sort((a, b) => b[1] - a[1]);
   }
 
-  function renderDowntimeChart(canvasId, downtimeTotals) {
+  function tierColorVar(oeePct) {
+    if (oeePct >= 90) return "--good";
+    if (oeePct >= 80) return "--ok";
+    return "--bad";
+  }
+
+  function renderRankedOeeChart(canvasId, products) {
     destroy(canvasId);
-    const entries = sortedDowntimeEntries(downtimeTotals);
+    const sorted = products.slice().sort((a, b) => b.avgOeePct - a.avgOeePct);
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
       type: "bar",
       data: {
-        labels: entries.map(([k]) => DOWNTIME_LABELS[k] || k),
+        labels: sorted.map((p) => p.displayName),
         datasets: [{
-          data: entries.map(([, v]) => v),
-          backgroundColor: cssVar("--maroon"),
+          data: sorted.map((p) => p.avgOeePct),
+          backgroundColor: sorted.map((p) => cssVar(tierColorVar(p.avgOeePct))),
           borderWidth: 0,
-          maxBarThickness: 22,
+          maxBarThickness: 40,
         }],
       },
       options: {
@@ -64,19 +70,71 @@ const Charts = (() => {
           legend: { display: false },
           tooltip: {
             callbacks: {
+              label: (item) => `${item.formattedValue}% average OEE`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            min: 0,
+            max: 100,
+            ticks: { font: baseFont(), callback: (v) => v + "%" },
+            grid: { color: cssVar("--border") },
+          },
+          y: {
+            ticks: { font: baseFont() },
+            grid: { display: false },
+          },
+        },
+      },
+    });
+  }
+
+  function renderDowntimeChart(canvasId, downtimeTotals, limit, compact) {
+    destroy(canvasId);
+    let entries = sortedDowntimeEntries(downtimeTotals);
+    if (limit) entries = entries.slice(0, limit);
+    const tickFont = compact ? { family: "Inter, -apple-system, sans-serif", size: 10 } : baseFont();
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: entries.map(([k]) => DOWNTIME_LABELS[k] || k),
+        datasets: [{
+          data: entries.map(([, v]) => v),
+          backgroundColor: cssVar("--maroon"),
+          borderWidth: 0,
+          maxBarThickness: compact ? 18 : 22,
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "nearest", axis: "y", intersect: false },
+        layout: compact ? { padding: { left: 4 } } : undefined,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
               label: (item) => `${item.formattedValue} min`,
             },
           },
         },
         scales: {
           x: {
-            title: { display: true, text: "Minutes", font: baseFont() },
-            ticks: { font: baseFont() },
+            title: compact ? undefined : { display: true, text: "Minutes", font: baseFont() },
+            ticks: { font: tickFont },
             grid: { color: cssVar("--border") },
           },
           y: {
-            ticks: { font: baseFont(), autoSkip: false },
+            ticks: { font: tickFont, autoSkip: false },
             grid: { display: false },
+            // Chart.js's own auto-sized label column comes out a few px
+            // too narrow for some labels (seen clipping "Mechanical
+            // Breakdown"'s leading "M" even though it measures narrower
+            // than the reserved width) -- pad it out defensively.
+            afterFit: (scale) => { scale.width += 14; },
           },
         },
       },
@@ -295,6 +353,8 @@ const Charts = (() => {
     renderOutputChartDay,
     renderOutputChartOverview,
     renderTrendChart,
+    renderRankedOeeChart,
+    tierColorVar,
     weeklyBuckets,
   };
 })();

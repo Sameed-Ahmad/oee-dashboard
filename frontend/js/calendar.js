@@ -60,6 +60,13 @@ const Calendar = (() => {
         const dot = document.createElement("span");
         dot.className = `dot dot-${oeeTier(record.oeePct)}`;
         cell.appendChild(dot);
+        if (record.shiftCount > 1) {
+          const badge = document.createElement("span");
+          badge.className = "shift-badge";
+          badge.textContent = record.shiftCount;
+          badge.title = `${record.shiftCount} shifts reported`;
+          cell.appendChild(badge);
+        }
         cell.addEventListener("click", () => onSelectDay(dateStr));
         cell.title = `${dateStr} — OEE ${record.oeePct}%`;
       } else {

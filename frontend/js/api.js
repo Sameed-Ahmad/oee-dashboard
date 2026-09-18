@@ -1,5 +1,7 @@
-// Thin fetch wrappers for the backend API. Everything is namespaced by product
-// slug even though only "fryo" is registered today (see backend/app/products/registry.py).
+// Thin fetch wrappers for the backend API. Product/department endpoints are
+// namespaced by slug -- see backend/app/products/registry.py for the full
+// company org chart (most of it has no data yet; only shahi-1-packing's four
+// products are wired into this frontend today, see app.js).
 const Api = (() => {
   const BASE = "/api";
 
@@ -25,5 +27,11 @@ const Api = (() => {
     getDay: (slug, date) => get(`/products/${slug}/days/${date}`),
     getOverview: (slug) => get(`/products/${slug}/overview`),
     refresh: (slug) => post(`/products/${slug}/refresh`),
+    // Full org chart -- not consumed by the frontend yet (only
+    // shahi-1-packing has data), but real and correct. This is where a
+    // future company/unit/department switcher would start.
+    getCompany: () => get("/company"),
+    getDepartment: (slug) => get(`/departments/${slug}`),
+    getDepartmentOverview: (slug) => get(`/departments/${slug}/overview`),
   };
 })();

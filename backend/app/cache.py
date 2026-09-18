@@ -8,19 +8,20 @@ from .models import DateRange, DayRecord, ProductSummary
 from .products.registry import ProductConfig
 
 
-def save_cache(slug: str, records: list[dict]) -> None:
+def save_cache(slug: str, records: list[dict], warnings: list[str]) -> None:
     path = processed_cache_path(slug)
-    path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    path.write_text(json.dumps({"records": records, "warnings": warnings}, indent=2), encoding="utf-8")
 
 
-def load_cache(slug: str) -> list[dict] | None:
+def load_cache(slug: str) -> dict | None:
+    """Returns {"records": [...], "warnings": [...]}, or None if no cache file exists yet."""
     path = processed_cache_path(slug)
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def compute_summary(config: ProductConfig, records: list[dict]) -> ProductSummary:
+def compute_summary(config: ProductConfig, records: list[dict], warnings: list[str]) -> ProductSummary:
     if not records:
         raise ValueError(f"cannot compute summary for '{config.slug}' with no records")
 
@@ -36,6 +37,7 @@ def compute_summary(config: ProductConfig, records: list[dict]) -> ProductSummar
     return ProductSummary(
         slug=config.slug,
         displayName=config.display_name,
+        departmentSlug=config.department_slug,
         dateRange=DateRange(start=records[0]["date"], end=records[-1]["date"]),
         daysCount=n,
         avgAvailabilityPct=round(sum(r["availabilityPct"] for r in records) / n, 2),
@@ -50,4 +52,5 @@ def compute_summary(config: ProductConfig, records: list[dict]) -> ProductSummar
         downtimeTotals={k: round(v, 1) for k, v in downtime_totals.items()},
         bestDay=DayRecord(**best_day),
         worstDay=DayRecord(**worst_day),
+        dataQualityWarnings=warnings,
     )

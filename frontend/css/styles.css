@@ -144,6 +144,9 @@ h1, h2, h3, .font-display {
 }
 
 .header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   text-align: right;
   font-size: 13px;
   color: var(--muted);
@@ -163,7 +166,7 @@ h1, h2, h3, .font-display {
   height: 32px;
   cursor: pointer;
   font-size: 14px;
-  margin-left: 12px;
+  flex-shrink: 0;
 }
 
 /* ---------- Selector pill ---------- */
@@ -192,6 +195,49 @@ h1, h2, h3, .font-display {
 }
 
 .pill-btn:hover { background: var(--panel-2); }
+
+.controls-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.back-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.back-link:hover { color: var(--maroon-ink); }
+
+.product-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+}
+
+.product-tab {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  border-right: 1px solid var(--border);
+}
+
+.product-tab:last-child { border-right: none; }
+
+.product-tab.active {
+  background: var(--maroon);
+  color: #fff;
+}
+
+.product-tab:not(.active):hover {
+  background: var(--panel-2);
+  color: var(--ink);
+}
 
 .refresh-btn {
   border: 1px solid var(--border);
@@ -287,6 +333,45 @@ h1, h2, h3, .font-display {
 .bar-row.avail .bar-fill { background: var(--line-avail); }
 .bar-row.perf .bar-fill { background: var(--line-perf); }
 .bar-row.qual .bar-fill { background: var(--good); }
+
+/* ---------- Shift toggle ---------- */
+.shift-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  border: 1px solid var(--border);
+}
+
+.segmented-control button {
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+
+.segmented-control button:last-child { border-right: none; }
+
+.segmented-control button.active {
+  background: var(--maroon);
+  color: #fff;
+}
+
+.combined-caption {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
 
 /* ---------- KPI strip ---------- */
 .kpi-strip {
@@ -560,6 +645,23 @@ h1, h2, h3, .font-display {
 .dot-ok { background: var(--ok); }
 .dot-bad { background: var(--bad); }
 
+.calendar-day .shift-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 8px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--maroon-ink);
+  background: var(--ok-bg);
+  border-radius: 50%;
+  width: 11px;
+  height: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .downtime-modal-box {
   max-width: 560px;
 }
@@ -569,6 +671,141 @@ h1, h2, h3, .font-display {
   height: 320px;
 }
 
+/* ---------- Department overview page ---------- */
+.dept-hero {
+  margin-top: 24px;
+}
+
+.dept-hero h2 {
+  font-size: 24px;
+  color: var(--maroon-ink);
+}
+
+.dept-sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.product-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.product-card {
+  display: block;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 18px;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.product-card:hover {
+  border-color: var(--maroon);
+  background: var(--panel-2);
+}
+
+.product-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.product-card-top h3 {
+  font-size: 16px;
+  color: var(--maroon-ink);
+}
+
+.product-card-oee {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--maroon-ink);
+  margin-top: 10px;
+}
+
+.product-card-metrics {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.product-card-metrics div {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.product-card-metrics strong {
+  font-size: 14px;
+  color: var(--ink);
+  margin-top: 2px;
+}
+
+.product-card-footer {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+
+.dept-panel {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 20px;
+}
+
+.dept-panel h2, .downtime-grid-heading {
+  font-size: 16px;
+  color: var(--maroon-ink);
+  margin-bottom: 4px;
+}
+
+.dept-panel .panel-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
+.dept-panel .chart-wrap {
+  position: relative;
+  height: 220px;
+}
+
+.downtime-small-multiples {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.downtime-small-card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 16px;
+}
+
+.downtime-small-card h3 {
+  font-size: 14px;
+  color: var(--maroon-ink);
+  margin-bottom: 10px;
+}
+
+.chart-wrap.small {
+  position: relative;
+  height: 180px;
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; }
@@ -576,7 +813,8 @@ h1, h2, h3, .font-display {
   .kpi-strip { grid-template-columns: 1fr; }
   .panels-row { grid-template-columns: 1fr; }
   .header { flex-direction: column; align-items: flex-start; }
-  .header-right { text-align: left; }
+  .header-right { text-align: left; align-items: flex-start; flex-direction: row-reverse; justify-content: flex-end; }
+  .downtime-small-multiples { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
