@@ -10,6 +10,7 @@ from ..cache import compute_summary, load_cache, save_cache
 from ..models import (
     CompanyOrgInfo,
     DayRecord,
+    DepartmentAvgSummary,
     DepartmentDetail,
     DepartmentOrgInfo,
     DepartmentOverview,
@@ -19,7 +20,10 @@ from ..models import (
     ProductSummary,
     SlugName,
     SubEnterpriseOrgInfo,
+    UnitDetail,
     UnitOrgInfo,
+    UnitOverview,
+    UnitOverviewDepartmentEntry,
 )
 from ..parser import parse_workbook
 from ..products.registry import (
@@ -197,3 +201,47 @@ def get_department_overview(dept_slug: str):
         entries.append(DepartmentProductEntry(slug=p.slug, displayName=p.display_name, summary=summary))
 
     return DepartmentOverview(department=dept_detail, products=entries)
+
+
+@router.get("/units/{unit_slug}/overview", response_model=UnitOverview)
+def get_unit_overview(unit_slug: str):
+    unit = get_unit(unit_slug)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    sub_enterprise = get_sub_enterprise(unit.sub_enterprise_slug)
+
+    dept_entries = []
+    for dept in departments_in_unit(unit_slug):
+        summaries = []
+        for p in products_in_department(dept.slug):
+            if not product_has_data(p.slug):
+                continue
+            records = _get_records(p.slug)
+            _, warnings = _load(p.slug)
+            summaries.append(compute_summary(p, records, warnings))
+
+        if not summaries:
+            continue  # department has no data yet -- omit rather than show a meaningless zero average
+
+        n = len(summaries)
+        avg_summary = DepartmentAvgSummary(
+            avgAvailabilityPct=round(sum(s.avgAvailabilityPct for s in summaries) / n, 2),
+            avgPerformancePct=round(sum(s.avgPerformancePct for s in summaries) / n, 2),
+            avgQualityPct=round(sum(s.avgQualityPct for s in summaries) / n, 2),
+            avgOeePct=round(sum(s.avgOeePct for s in summaries) / n, 2),
+        )
+        dept_entries.append(UnitOverviewDepartmentEntry(
+            slug=dept.slug,
+            displayName=dept.display_name,
+            productCount=n,
+            summary=avg_summary,
+        ))
+
+    return UnitOverview(
+        unit=UnitDetail(
+            slug=unit.slug,
+            displayName=unit.display_name,
+            subEnterprise=SlugName(slug=sub_enterprise.slug, displayName=sub_enterprise.display_name),
+        ),
+        departments=dept_entries,
+    )

@@ -1,15 +1,15 @@
-// Top-level router: decides whether to show the department-overview page or
-// a single-product dashboard, based on the URL hash, and wires the one truly
-// global control (dark-mode toggle). Everything else lives in department.js
-// / product.js.
+// Top-level router: decides which of the three pages (unit overview /
+// department overview / single-product dashboard) to show, based on the URL
+// hash, and wires the one truly global control (dark-mode toggle).
+// Everything else lives in unit.js / department.js / product.js.
 //
-// NOTE: only "shahi-1-packing" (Fry-O/Pops/Ishida/Nimco) has data today, so
-// this is hardcoded as the landing page and the only department the product
-// tab bar/back-link ever points at. Once other departments have data, a real
-// company/unit/department switcher would hook in here -- Api.getCompany()
-// already returns the full org chart with per-product hasData flags, ready
-// for that.
-const DEFAULT_DEPARTMENT_SLUG = "shahi-1-packing";
+// NOTE: only Shahi 1 (Packing Dept: Fry-O/Pops/Ishida/Nimco; Production
+// Dept: Coated Peanut/Namak Para/HNC 1/HNC 3/Extruder/Kuiper) has data
+// today, so "shahi-1" is hardcoded as the landing page. Once other units
+// have data, a real company/unit switcher would hook in here --
+// Api.getCompany() already returns the full org chart with per-product
+// hasData flags, ready for that.
+const DEFAULT_UNIT_SLUG = "shahi-1";
 
 const el = (id) => document.getElementById(id);
 
@@ -22,20 +22,30 @@ function parseRoute() {
   if (parts[0] === "department" && parts[1]) {
     return { view: "department", slug: parts[1] };
   }
-  return { view: "department", slug: DEFAULT_DEPARTMENT_SLUG };
+  if (parts[0] === "unit" && parts[1]) {
+    return { view: "unit", slug: parts[1] };
+  }
+  return { view: "unit", slug: DEFAULT_UNIT_SLUG };
+}
+
+const PAGES = ["unitPage", "departmentPage", "productPage"];
+
+function showPage(id) {
+  PAGES.forEach((p) => { el(p).style.display = p === id ? "" : "none"; });
 }
 
 async function route() {
   const { view, slug } = parseRoute();
   try {
     if (view === "product") {
-      el("departmentPage").style.display = "none";
-      el("productPage").style.display = "";
+      showPage("productPage");
       await Product.show(slug);
-    } else {
-      el("productPage").style.display = "none";
-      el("departmentPage").style.display = "";
+    } else if (view === "department") {
+      showPage("departmentPage");
       await Department.show(slug);
+    } else {
+      showPage("unitPage");
+      await Unit.show(slug);
     }
   } catch (err) {
     console.error(err);

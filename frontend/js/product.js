@@ -7,7 +7,10 @@ const Product = (() => {
 
   const state = {
     slug: null,
-    allProducts: [], // [{slug, displayName}], for the tab bar
+    departmentSlug: null,
+    departmentDisplayName: null,
+    unitDisplayName: null,
+    siblingProducts: [], // [{slug, displayName}], products in the same department -- tab bar
     overview: null,
     allDates: [],
     recordsByDate: {},
@@ -24,10 +27,6 @@ const Product = (() => {
     const isProductSwitch = state.slug !== slug;
     state.slug = slug;
 
-    if (state.allProducts.length === 0) {
-      state.allProducts = await Api.listProducts();
-    }
-
     if (isProductSwitch) {
       state.recordsByDate = {};
       state.mode = "overview";
@@ -41,6 +40,17 @@ const Product = (() => {
       ]);
       state.overview = overview;
       state.allDates = allDates;
+
+      // Only re-fetch the department (and its product list, for the tab
+      // bar) if we've actually moved to a different department -- e.g.
+      // switching between two Packing Dept products doesn't need this.
+      if (overview.departmentSlug !== state.departmentSlug) {
+        const dept = await Api.getDepartment(overview.departmentSlug);
+        state.departmentSlug = dept.slug;
+        state.departmentDisplayName = dept.displayName;
+        state.unitDisplayName = dept.unit.displayName;
+        state.siblingProducts = dept.products.filter((p) => p.hasData);
+      }
 
       const dayRecords = await Promise.all(allDates.map((d) => Api.getDay(slug, d)));
       dayRecords.forEach((r) => { state.recordsByDate[r.date] = r; });
@@ -61,16 +71,19 @@ const Product = (() => {
 
   function renderHeader() {
     const ov = state.overview;
-    el("headerHeading").textContent = `${ov.displayName} Packing Line`;
-    el("headerSubtitle").textContent = "Shahi Enterprises — OEE Dashboard";
+    el("headerHeading").textContent = ov.displayName;
+    el("headerSubtitle").textContent = `${state.unitDisplayName} › ${state.departmentDisplayName}`;
     el("headerRightDynamic").innerHTML =
       `<div class="date-range">${Utils.formatDateShort(ov.dateRange.start)} – ${Utils.formatDateShort(ov.dateRange.end)}</div>`;
+
+    el("backToOverviewLink").href = `#/department/${state.departmentSlug}`;
+    el("backToOverviewLink").textContent = `‹ All products`;
   }
 
   function renderProductTabs() {
     const container = el("productTabs");
     container.innerHTML = "";
-    state.allProducts.forEach((p) => {
+    state.siblingProducts.forEach((p) => {
       const tab = document.createElement("a");
       tab.className = "product-tab" + (p.slug === state.slug ? " active" : "");
       tab.href = `#/product/${p.slug}`;
@@ -280,9 +293,10 @@ const Product = (() => {
 
   function renderCalendarMonth() {
     const idx = state.availableMonths.indexOf(state.calendarMonthKey);
-    el("calMonthLabel").textContent = Calendar.monthLabel(state.calendarMonthKey);
+    el("calMonthLabel").textContent = Calendar.monthNameOnly(state.calendarMonthKey);
     el("calPrevBtn").disabled = idx <= 0;
     el("calNextBtn").disabled = idx === -1 || idx >= state.availableMonths.length - 1;
+    syncYearSelect();
 
     Calendar.renderMonth(
       el("calendarGrid"),
@@ -298,6 +312,26 @@ const Product = (() => {
         render();
       },
     );
+  }
+
+  function syncYearSelect() {
+    const sel = el("calYearSelect");
+    const years = Calendar.yearsFromMonths(state.availableMonths);
+    const optionsHtml = years.map((y) => `<option value="${y}">${y}</option>`).join("");
+    if (sel.dataset.years !== optionsHtml) {
+      sel.innerHTML = optionsHtml;
+      sel.dataset.years = optionsHtml;
+    }
+    sel.value = state.calendarMonthKey.slice(0, 4);
+  }
+
+  function jumpToYear(year) {
+    const currentMonthNum = Number(state.calendarMonthKey.slice(5, 7));
+    const target = Calendar.closestMonthInYear(state.availableMonths, year, currentMonthNum);
+    if (target) {
+      state.calendarMonthKey = target;
+      renderCalendarMonth();
+    }
   }
 
   function setTrendToggle(mode) {
@@ -342,6 +376,10 @@ const Product = (() => {
         state.calendarMonthKey = state.availableMonths[idx + 1];
         renderCalendarMonth();
       }
+    });
+
+    el("calYearSelect").addEventListener("change", (e) => {
+      jumpToYear(e.target.value);
     });
 
     document.querySelectorAll("#trendToggle button").forEach((btn) => {

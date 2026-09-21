@@ -1,13 +1,14 @@
 """Generic Excel-parsing engine for daily OEE report workbooks.
 
-One parser for every product (Fry-O, Pops, Ishida, Nimco, and future ones):
-every column from F onward is in the identical position with the identical
-meaning across all four real workbooks -- only the leftmost identifier
-columns (A-E) vary cosmetically and aren't used. The only real per-product
-differences are the file location and the shift structure (some products
-report one sheet per day, others a Day + Night sheet per day, occasionally
-with a single sheet or an oddball shift code) -- both handled generically
-below rather than configured per product.
+One parser for every product, across both departments now wired up (Packing:
+Fry-O/Pops/Ishida/Nimco; Production: Coated Peanut/Namak Para/HNC 1/HNC 3/
+Extruder/Kuiper). Production Dept's workbooks do NOT share Packing Dept's
+exact column layout (summary block at AI/AJ/AK instead of AJ/AK/AL, no
+reliable label text, completely different and per-product-varying downtime
+category sets, occasional one-off row-shifted sheets, inconsistent date
+formatting) -- so nothing here is keyed by a hardcoded column letter, label
+string, or downtime category name. Everything is located by content, per
+sheet, at parse time.
 """
 from __future__ import annotations
 
@@ -19,28 +20,41 @@ import openpyxl
 
 from .products.registry import ProductConfig, resolve_excel_path
 
-EXPECTED_LABELS = [
-    "Machines", "Time", "Average Speed", "Target Output",
-    "Machines", "Time", "Target Output", "Availability %",
-    "Target counter", "Actual Counter", "Performance %",
-    "Stock Transferred", "Quality %", "OEE %", "Total Labor", "Output/Labor",
-]
-
-DOWNTIME_COLS = {
-    "Shift Startup": "J", "Shift End": "K", "Wrapper Changeover": "L",
-    "Product Changeover": "M", "KE Breakdown": "N", "Nitrogen/Air Issue": "O",
-    "Electrical Breakdown": "P", "Mechanical Breakdown": "Q",
-    "Labor Short": "R", "Material Delay": "S",
-    "Operator Maintenance": "T", "Cleaning": "U",
-}
-
-SHEET_NAME_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{2})(.*)$")
+# 1-2 digit day/month, 4-or-2-digit year. Try the 4-digit alternative FIRST --
+# regex alternation is tried left-to-right, so reversing this order would
+# silently mis-parse any 4-digit-year sheet name (e.g. "10-02-2026" would
+# match the 2-digit branch as day=10, month=02, year=20, leaving "26" to leak
+# into the shift-code group).
+SHEET_NAME_RE = re.compile(r"^(\d{1,2})-(\d{1,2})-(\d{4}|\d{2})(.*)$")
 
 SHIFT_LABELS = {"D": "Day", "N": "Night", "SINGLE": "Full day"}
+
+PAREN_SUFFIX_RE = re.compile(r"^(.*?)\s*\((\d+)\)$")
 
 
 def shift_label(code: str) -> str:
     return SHIFT_LABELS.get(code, code.title())  # unknown codes (e.g. "B") -> "B"
+
+
+def split_shift_code_suffix(shift_code: str) -> tuple[str, str | None]:
+    """Splits a trailing '(NN)' numeric suffix off a shift code, e.g.
+    "D (56)" -> ("D", "56"), "(62)" -> ("SINGLE", "62"), "D" -> ("D", None).
+
+    Some workbooks reuse a "(N)" suffix for two structurally different
+    things: Fry-O/Nimco use it for leftover duplicate/edit-history copies of
+    an already-reported shift (a "clean", unsuffixed sheet for that same
+    date+shift always exists alongside them), while Coated Peanut uses it to
+    distinguish genuinely separate parallel production lines reported for
+    the same date (no clean/unsuffixed sheet ever exists for those dates at
+    all). Both cases produce the same suffix pattern, so which one applies
+    can only be decided later, per date, by checking whether a clean sibling
+    exists -- see parse_workbook.
+    """
+    m = PAREN_SUFFIX_RE.match(shift_code)
+    if not m:
+        return shift_code, None
+    base = m.group(1).strip().upper() or "SINGLE"
+    return base, m.group(2)
 
 
 @dataclass
@@ -52,7 +66,7 @@ class ParseResult:
 
 def should_skip_sheet(name: str) -> bool:
     low = name.lower()
-    return "summary" in low or "link" in low or "(" in name
+    return "summary" in low or "link" in low or "blank" in low or low.startswith("sheet")
 
 
 def parse_sheet_name(name: str) -> tuple[str | None, str | None]:
@@ -62,21 +76,28 @@ def parse_sheet_name(name: str) -> tuple[str | None, str | None]:
     if not m:
         return None, None
     d, mo, y, rest = m.groups()
+    year = int(y) if len(y) == 4 else 2000 + int(y)
     try:
-        datetime.date(int(f"20{y}"), int(mo), int(d))  # validates a real calendar date
+        datetime.date(year, int(mo), int(d))  # validates a real calendar date
     except ValueError:
         return None, None
-    return f"20{y}-{mo}-{d}", (rest.strip().upper() or "SINGLE")
+    return f"{year:04d}-{int(mo):02d}-{int(d):02d}", (rest.strip().upper() or "SINGLE")
 
 
-def find_summary_anchor(ws, max_row: int = 60) -> int | None:
-    """Locates the row where the AK/AL summary block starts, by finding the
-    'Machines'/'Available' anchor rather than assuming a fixed row -- this
-    drifts between products (row 8 for Fry-O/Pops/Ishida, row 7 for Nimco)."""
+def find_summary_anchor(ws, max_row: int = 60, max_col: int = 45) -> tuple[int | None, int | None]:
+    """Finds the (row, label_column) of the 16-row summary block by searching
+    for the 'Available'/'Machines'/<number> triplet in ANY column -- Packing
+    Dept has it at AJ/AK/AL, Production Dept at AI/AJ/AK, and it could in
+    principle land anywhere. Returns the column holding 'Machines' (the
+    label); values are one column further right."""
     for r in range(1, min(ws.max_row, max_row) + 1):
-        if ws[f"AJ{r}"].value == "Available" and ws[f"AK{r}"].value == "Machines":
-            return r
-    return None
+        for c in range(1, min(ws.max_column, max_col) + 1):
+            if ws.cell(row=r, column=c).value == "Available":
+                label = ws.cell(row=r, column=c + 1).value
+                value = ws.cell(row=r, column=c + 2).value
+                if label == "Machines" and isinstance(value, (int, float)):
+                    return r, c + 1
+    return None, None
 
 
 def find_row_with_label(ws, label: str, start_row: int = 1, max_row: int = 90) -> int | None:
@@ -92,29 +113,49 @@ def find_total_row(ws, max_row: int = 80) -> int | None:
     return find_row_with_label(ws, "Total", start_row=1, max_row=max_row)
 
 
+def find_downtime_range(ws, max_header_row: int = 15) -> tuple[int | None, list[int] | None]:
+    """Finds the header row and downtime column range by locating the
+    'total time' marker (end of the time-tracking columns) and 'total down
+    time' marker (start of the totals columns) in whichever row actually has
+    them -- Packing Dept has this at row 6, but at least one real sheet
+    (HNC 3's "14-01-26") has everything shifted up by one row, and the
+    downtime categories themselves differ per product, so nothing here is
+    positionally hardcoded."""
+    for hr in range(1, min(ws.max_row, max_header_row) + 1):
+        start_col = end_col = None
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row=hr, column=c).value
+            if isinstance(v, str):
+                lv = v.lower()
+                if start_col is None and "total time" in lv:
+                    start_col = c
+                if start_col is not None and "total down time" in lv:
+                    end_col = c
+                    break
+        if start_col and end_col and end_col > start_col + 1:
+            return hr, list(range(start_col + 1, end_col))
+    return None, None
+
+
 def _num(value, default=0):
     """Treats missing cells and Excel error values (#DIV/0!, #N/A, ...) as 0.
     In practice these show up on legitimate all-zero shifts (e.g. a Night
     shift that didn't run has 0 labor, so the sheet's own Output/Labor
     formula divides by zero) rather than indicating corrupted data."""
-    if value is None:
-        return default
-    if isinstance(value, str) and value.strip().startswith("#"):
-        return default
-    return value
+    if isinstance(value, (int, float)):
+        return value
+    return default
 
 
 def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
-    """Parses ONE shift-sheet into a raw shift record."""
-    anchor = find_summary_anchor(ws)
-    if anchor is None:
+    """Parses ONE shift-sheet into a raw shift record. Positional, not label-
+    text-based, since Production Dept's summary-block labels are sometimes
+    just blank even though the values are still correctly positioned."""
+    anchor_row, label_col = find_summary_anchor(ws)
+    if anchor_row is None:
         return None, f"no summary anchor found in sheet '{sheet_name}'"
 
-    labels = [ws[f"AK{r}"].value for r in range(anchor, anchor + 16)]
-    if labels != EXPECTED_LABELS:
-        return None, f"unexpected summary label sequence in sheet '{sheet_name}': {labels}"
-
-    vals = [ws[f"AL{r}"].value for r in range(anchor, anchor + 16)]
+    vals = [ws.cell(row=anchor_row + i, column=label_col + 1).value for i in range(16)]
     (
         avail_machines, avail_time, avg_speed, ideal_target_output,
         act_machines, act_time, actual_target_output,
@@ -126,14 +167,17 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
     if total_row is None:
         return None, f"no 'Total' row found in sheet '{sheet_name}'"
 
-    downtime = {
-        label: float(_num(ws[f"{col}{total_row}"].value))
-        for label, col in DOWNTIME_COLS.items()
-    }
+    header_row, dt_cols = find_downtime_range(ws)
+    if dt_cols is None:
+        return None, f"no downtime column range found in sheet '{sheet_name}'"
+
+    downtime = {}
+    for c in dt_cols:
+        label = ws.cell(row=header_row, column=c).value or f"Category {c}"
+        downtime[label] = float(_num(ws.cell(row=total_row, column=c).value))
 
     try:
         record = {
-            "sheet": sheet_name,
             "availMachines": int(_num(avail_machines)),
             "availTime": int(_num(avail_time)),
             "avgSpeed": float(_num(avg_speed)),
@@ -158,6 +202,16 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
     return record, None
 
 
+def is_blank_record(rec: dict) -> bool:
+    """A sub-record that contributed nothing real that date -- either a
+    leftover empty template copy or an inactive parallel production line
+    (Coated Peanut reports multiple lines as separate same-date sheets, not
+    all of which ran every day). Either way, exclude it from that date's
+    aggregation rather than counting it as a zero-output shift."""
+    return (rec["availTime"] == 0 and rec["actTime"] == 0 and
+            rec["idealTargetOutput"] == 0 and rec["actualCounter"] == 0)
+
+
 def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
     """Combines 1+ shift records for the same date into one DayRecord.
 
@@ -171,8 +225,8 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
     SUM(per-machine Availability %) / actMachines (a per-machine column we
     don't otherwise parse). But since availabilityPct * actMachines
     reconstructs that same per-machine sum exactly (verified against real
-    data across all four products), the day-level figure is that
-    reconstructed sum, re-summed across shifts and divided by the day's
+    data across all four Packing Dept products), the day-level figure is
+    that reconstructed sum, re-summed across shifts and divided by the day's
     total actMachines -- exact, not an approximation, with no extra parsing
     needed.
 
@@ -182,6 +236,11 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
     real data. OEE is then derived from the day-level Availability/
     Performance/Quality so the three keep multiplying out to the fourth at
     the day level, same as they do per-shift.
+
+    Downtime category names are read per-sheet rather than hardcoded (two
+    products can legitimately use different category names), so the day's
+    downtime totals are keyed by the union of whatever categories actually
+    appear across this date's shift records.
     """
     def s(field):
         return sum(r[field] for r in shift_records)
@@ -209,7 +268,13 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
         else (sum(r["avgSpeed"] for r in shift_records) / len(shift_records))
     )
 
-    downtime_totals = {k: s_downtime(shift_records, k) for k in DOWNTIME_COLS}
+    downtime_keys = set()
+    for r in shift_records:
+        downtime_keys.update(r["downtime"].keys())
+    downtime_totals = {
+        k: sum(r["downtime"].get(k, 0) for r in shift_records)
+        for k in downtime_keys
+    }
 
     return {
         "date": date_iso,
@@ -236,10 +301,6 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
     }
 
 
-def s_downtime(shift_records: list[dict], key: str) -> float:
-    return sum(r["downtime"][key] for r in shift_records)
-
-
 def parse_workbook(config: ProductConfig) -> ParseResult:
     path = resolve_excel_path(config)
     if path is None:
@@ -251,14 +312,30 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
     errors: list[str] = []
     skipped_sheets: list[str] = []
 
+    # Pass 1: classify every date-named sheet as "clean" (no numeric "(NN)"
+    # suffix) or "suffixed", so a suffixed sheet can be told apart from a
+    # true duplicate (Fry-O/Nimco: a clean sibling for that same date+shift
+    # already exists) vs a genuinely distinct parallel line (Coated Peanut:
+    # no clean sibling ever exists for those dates at all).
+    sheet_info: dict[str, tuple[str, str, str, str | None]] = {}  # name -> (date, shift_code, base_code, suffix)
+    clean_bases: dict[str, set[str]] = {}
     for name in wb.sheetnames:
         if should_skip_sheet(name):
             skipped_sheets.append(name)
             continue
-
         date_iso, shift_code = parse_sheet_name(name)
         if date_iso is None:
             errors.append(f"sheet name doesn't match the expected date pattern: '{name}'")
+            continue
+        base_code, suffix = split_shift_code_suffix(shift_code)
+        sheet_info[name] = (date_iso, shift_code, base_code, suffix)
+        if suffix is None:
+            clean_bases.setdefault(date_iso, set()).add(base_code)
+
+    # Pass 2: parse everything that isn't a confirmed duplicate.
+    for name, (date_iso, shift_code, base_code, suffix) in sheet_info.items():
+        if suffix is not None and base_code in clean_bases.get(date_iso, ()):
+            skipped_sheets.append(name)  # duplicate/edit-history copy of the clean sheet
             continue
 
         record, error = parse_shift_sheet(wb[name], name)
@@ -266,6 +343,15 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
             errors.append(error)
             continue
 
+        # Blank-filtering only applies to suffixed sheets (where duplication
+        # -- an inactive parallel line, or a stray empty copy -- is the
+        # actual concern). A clean/unsuffixed sheet is the sole record for
+        # its date+shift, so an all-zero result is real, reportable data
+        # (e.g. a Night shift that's honestly never run), not junk to hide.
+        if suffix is not None and is_blank_record(record):
+            continue
+
+        record["sheet"] = name
         record["shiftCode"] = shift_code
         record["shiftLabel"] = shift_label(shift_code)
         by_date.setdefault(date_iso, []).append(record)

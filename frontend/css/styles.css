@@ -582,9 +582,26 @@ h1, h2, h3, .font-display {
   cursor: not-allowed;
 }
 
+.month-year-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .calendar-nav .month-label {
   font-weight: 600;
   font-family: var(--font-display);
+}
+
+.year-select {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 6px;
+  cursor: pointer;
 }
 
 .calendar-grid {

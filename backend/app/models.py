@@ -132,3 +132,28 @@ class DepartmentProductEntry(BaseModel):
 class DepartmentOverview(BaseModel):
     department: DepartmentDetail
     products: list[DepartmentProductEntry]
+
+
+class DepartmentAvgSummary(BaseModel):
+    avgAvailabilityPct: float
+    avgPerformancePct: float
+    avgQualityPct: float
+    avgOeePct: float
+
+
+class UnitOverviewDepartmentEntry(BaseModel):
+    slug: str
+    displayName: str
+    productCount: int
+    summary: DepartmentAvgSummary
+
+
+class UnitDetail(BaseModel):
+    slug: str
+    displayName: str
+    subEnterprise: SlugName
+
+
+class UnitOverview(BaseModel):
+    unit: UnitDetail
+    departments: list[UnitOverviewDepartmentEntry]

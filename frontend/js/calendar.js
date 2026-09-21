@@ -15,9 +15,40 @@ const Calendar = (() => {
     return Array.from(months).sort();
   }
 
+  // Distinct years (as strings) present in a sorted "YYYY-MM" months list --
+  // powers the calendar's year-jump dropdown.
+  function yearsFromMonths(availableMonths) {
+    const years = new Set(availableMonths.map((m) => m.slice(0, 4)));
+    return Array.from(years).sort();
+  }
+
+  function monthsInYear(availableMonths, year) {
+    const prefix = `${year}-`;
+    return availableMonths.filter((m) => m.startsWith(prefix));
+  }
+
+  // Picks the best available month in `year` given the month number the
+  // user was previously looking at -- the exact same month if it has data,
+  // otherwise whichever available month in that year is numerically closest.
+  function closestMonthInYear(availableMonths, year, preferredMonthNum) {
+    const candidates = monthsInYear(availableMonths, year);
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+      const diffA = Math.abs(Number(a.slice(5, 7)) - preferredMonthNum);
+      const diffB = Math.abs(Number(b.slice(5, 7)) - preferredMonthNum);
+      return diffA - diffB;
+    });
+    return candidates[0];
+  }
+
   function monthLabel(monthKey) {
     const [y, m] = monthKey.split("-").map(Number);
     return `${MONTH_NAMES[m - 1]} ${y}`;
+  }
+
+  function monthNameOnly(monthKey) {
+    const m = Number(monthKey.split("-")[1]);
+    return MONTH_NAMES[m - 1];
   }
 
   function oeeTier(oeePct) {
@@ -77,5 +108,8 @@ const Calendar = (() => {
     }
   }
 
-  return { monthsFromDates, monthLabel, renderMonth, oeeTier };
+  return {
+    monthsFromDates, monthLabel, monthNameOnly, renderMonth, oeeTier,
+    yearsFromMonths, monthsInYear, closestMonthInYear,
+  };
 })();

@@ -80,13 +80,13 @@ PRODUCTS: dict[str, ProductConfig] = {
     "ishida": ProductConfig("ishida", "Ishida", "shahi-1-packing", Path("backend/data/raw/ishida")),
     "nimco": ProductConfig("nimco", "Nimco", "shahi-1-packing", Path("backend/data/raw/nimco")),
 
-    # --- shahi-1-production: known products, no data source yet ---
-    "shahi1-coated-peanuts": ProductConfig("shahi1-coated-peanuts", "Coated Peanuts", "shahi-1-production"),
-    "shahi1-extruder": ProductConfig("shahi1-extruder", "Extruder", "shahi-1-production"),
-    "shahi1-hnc-1": ProductConfig("shahi1-hnc-1", "HNC 1", "shahi-1-production"),
-    "shahi1-hnc-3": ProductConfig("shahi1-hnc-3", "HNC 3", "shahi-1-production"),
-    "shahi1-kuiper": ProductConfig("shahi1-kuiper", "Kuiper", "shahi-1-production"),
-    "shahi1-nomak-para": ProductConfig("shahi1-nomak-para", "Nomak Para", "shahi-1-production"),
+    # --- shahi-1-production: real data ---
+    "coated-peanut": ProductConfig("coated-peanut", "Coated Peanut", "shahi-1-production", Path("backend/data/raw/coated-peanut")),
+    "namak-para": ProductConfig("namak-para", "Namak Para", "shahi-1-production", Path("backend/data/raw/namak-para")),
+    "hnc-1": ProductConfig("hnc-1", "HNC 1", "shahi-1-production", Path("backend/data/raw/hnc-1")),
+    "hnc-3": ProductConfig("hnc-3", "HNC 3", "shahi-1-production", Path("backend/data/raw/hnc-3")),
+    "extruder": ProductConfig("extruder", "Extruder", "shahi-1-production", Path("backend/data/raw/extruder")),
+    "kuiper": ProductConfig("kuiper", "Kuiper", "shahi-1-production", Path("backend/data/raw/kuiper")),
 
     # --- shahi-3-packing: known products, no data source yet ---
     "lhr-snacks": ProductConfig("lhr-snacks", "LHR Snacks", "shahi-3-packing"),

@@ -19,6 +19,9 @@ const Department = (() => {
     el("headerSubtitle").textContent = `${dept.unit.displayName} › ${dept.displayName}`;
     el("headerRightDynamic").innerHTML = "";
 
+    el("backToUnitLink").href = `#/unit/${dept.unit.slug}`;
+    el("backToUnitLink").textContent = `‹ ${dept.unit.displayName}`;
+
     el("deptHeading").textContent = dept.displayName;
     el("deptSub").textContent = `${overview.products.length} product${overview.products.length === 1 ? "" : "s"} with data in this department`;
   }
