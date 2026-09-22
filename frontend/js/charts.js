@@ -46,6 +46,84 @@ const Charts = (() => {
     return "--bad";
   }
 
+  // One color per product line in the cross-product trend comparison --
+  // cycles if more products are selected than colors (rare in practice).
+  const COMPARISON_PALETTE = ["--maroon", "--line-avail", "--gold", "--good", "--bad", "--maroon-ink"];
+
+  function renderComparisonBarChart(canvasId, products) {
+    destroy(canvasId);
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: products.map((p) => p.displayName),
+        datasets: [
+          { label: "Availability %", data: products.map((p) => p.avgAvailabilityPct), backgroundColor: cssVar("--line-avail"), borderWidth: 0 },
+          { label: "Performance %", data: products.map((p) => p.avgPerformancePct), backgroundColor: cssVar("--line-perf"), borderWidth: 0 },
+          { label: "Quality %", data: products.map((p) => p.avgQualityPct), backgroundColor: cssVar("--good"), borderWidth: 0 },
+          { label: "OEE %", data: products.map((p) => p.avgOeePct), backgroundColor: cssVar("--maroon"), borderWidth: 0 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${item.formattedValue}%` } },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: { min: 0, max: 100, ticks: { font: baseFont(), callback: (v) => v + "%" }, grid: { color: cssVar("--border") } },
+        },
+      },
+    });
+  }
+
+  // series: [{ label, weeklyOee: [{weekStart, avgOeePct}, ...] }] -- one
+  // line per product, aligned on shared calendar weeks (not each product's
+  // own start date) so products with different history lengths/date ranges
+  // still compare meaningfully. Weeks a product has no data for are left as
+  // a genuine gap (not bridged), since it may not have existed/run yet.
+  function renderProductComparisonTrendChart(canvasId, series) {
+    destroy(canvasId);
+    const allWeeks = Array.from(new Set(series.flatMap((s) => s.weeklyOee.map((w) => w.weekStart)))).sort();
+    const datasets = series.map((s, i) => {
+      const byWeek = {};
+      s.weeklyOee.forEach((w) => { byWeek[w.weekStart] = w.avgOeePct; });
+      return {
+        label: s.label,
+        data: allWeeks.map((wk) => (wk in byWeek ? byWeek[wk] : null)),
+        borderColor: cssVar(COMPARISON_PALETTE[i % COMPARISON_PALETTE.length]),
+        backgroundColor: "transparent",
+        pointRadius: 0,
+        borderWidth: 2,
+      };
+    });
+
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "line",
+      data: { labels: allWeeks, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${item.dataset.label}: ${item.parsed.y == null ? "no data" : item.parsed.y.toFixed(1) + "%"}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont(), maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+          y: { min: 0, max: 100, ticks: { font: baseFont(), callback: (v) => v + "%" }, grid: { color: cssVar("--border") } },
+        },
+      },
+    });
+  }
+
   function renderRankedOeeChart(canvasId, products) {
     destroy(canvasId);
     const sorted = products.slice().sort((a, b) => b.avgOeePct - a.avgOeePct);
@@ -205,10 +283,17 @@ const Charts = (() => {
 
   function renderOutputChartOverview(canvasId, allRecords) {
     destroy(canvasId);
-    const buckets = weeklyBuckets(allRecords);
+    // Short user-picked ranges (e.g. a week) read better as one point per
+    // day; long ones (the whole dataset) need weekly buckets to stay
+    // legible. Either way, a chart with only 1-2 points needs visible dots
+    // -- a bare line with pointRadius 0 has nothing to draw with that few points.
+    const buckets = allRecords.length <= 14
+      ? allRecords.map((r) => [r])
+      : weeklyBuckets(allRecords);
     const labels = buckets.map((b) => b[0].date);
     const ideal = buckets.map((b) => b.reduce((s, r) => s + r.idealTargetOutput, 0));
     const actual = buckets.map((b) => b.reduce((s, r) => s + r.actualCounter, 0));
+    const pointRadius = buckets.length <= 2 ? 3 : 0;
 
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
@@ -222,7 +307,7 @@ const Charts = (() => {
             borderColor: cssVar("--muted"),
             backgroundColor: "transparent",
             borderDash: [4, 4],
-            pointRadius: 0,
+            pointRadius,
             borderWidth: 2,
           },
           {
@@ -230,7 +315,7 @@ const Charts = (() => {
             data: actual,
             borderColor: cssVar("--maroon"),
             backgroundColor: "transparent",
-            pointRadius: 0,
+            pointRadius,
             borderWidth: 2,
           },
         ],
@@ -265,60 +350,68 @@ const Charts = (() => {
     destroy(canvasId);
     let labels, oee, avail, perf;
 
+    // Machine/line-level records never have a real OEE % (Quality % isn't
+    // tracked at that granularity -- see MachineDayRecord) -- rather than
+    // average nulls into a misleading flat 0% line, drop the OEE dataset
+    // entirely when there's nothing real to plot.
+    const hasOee = records.length > 0 && records[0].oeePct != null;
+
     if (mode === "full") {
       const buckets = weeklyBuckets(records);
       labels = buckets.map((b) => b[0].date);
-      oee = buckets.map((b) => avg(b.map((r) => r.oeePct)));
+      oee = hasOee ? buckets.map((b) => avg(b.map((r) => r.oeePct))) : [];
       avail = buckets.map((b) => avg(b.map((r) => r.availabilityPct)));
       perf = buckets.map((b) => avg(b.map((r) => r.performancePct)));
     } else {
       labels = records.map((r) => r.date);
-      oee = records.map((r) => r.oeePct);
+      oee = hasOee ? records.map((r) => r.oeePct) : [];
       avail = records.map((r) => r.availabilityPct);
       perf = records.map((r) => r.performancePct);
     }
 
+    const datasets = [];
+    if (hasOee) {
+      datasets.push({
+        label: "OEE %",
+        data: oee,
+        borderColor: cssVar("--line-oee"),
+        backgroundColor: "transparent",
+        pointRadius: 0,
+        borderWidth: 2,
+      });
+    }
+    datasets.push(
+      {
+        label: "Availability %",
+        data: avail,
+        borderColor: cssVar("--line-avail"),
+        backgroundColor: "transparent",
+        pointRadius: 0,
+        borderWidth: 1.5,
+      },
+      {
+        label: "Performance %",
+        data: perf,
+        borderColor: cssVar("--line-perf"),
+        backgroundColor: "transparent",
+        pointRadius: 0,
+        borderWidth: 1.5,
+      },
+      {
+        label: "World-class benchmark (85%)",
+        data: labels.map(() => 85),
+        borderColor: cssVar("--muted"),
+        backgroundColor: "transparent",
+        borderDash: [6, 4],
+        pointRadius: 0,
+        borderWidth: 1,
+      },
+    );
+
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
       type: "line",
-      data: {
-        labels,
-        datasets: [
-          {
-            label: "OEE %",
-            data: oee,
-            borderColor: cssVar("--line-oee"),
-            backgroundColor: "transparent",
-            pointRadius: 0,
-            borderWidth: 2,
-          },
-          {
-            label: "Availability %",
-            data: avail,
-            borderColor: cssVar("--line-avail"),
-            backgroundColor: "transparent",
-            pointRadius: 0,
-            borderWidth: 1.5,
-          },
-          {
-            label: "Performance %",
-            data: perf,
-            borderColor: cssVar("--line-perf"),
-            backgroundColor: "transparent",
-            pointRadius: 0,
-            borderWidth: 1.5,
-          },
-          {
-            label: "World-class benchmark (85%)",
-            data: labels.map(() => 85),
-            borderColor: cssVar("--muted"),
-            backgroundColor: "transparent",
-            borderDash: [6, 4],
-            pointRadius: 0,
-            borderWidth: 1,
-          },
-        ],
-      },
+      data: { labels, datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -354,6 +447,8 @@ const Charts = (() => {
     renderOutputChartOverview,
     renderTrendChart,
     renderRankedOeeChart,
+    renderComparisonBarChart,
+    renderProductComparisonTrendChart,
     tierColorVar,
     weeklyBuckets,
   };

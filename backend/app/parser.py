@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 import openpyxl
@@ -62,6 +63,7 @@ class ParseResult:
     records: list[dict]
     errors: list[str]
     skipped_sheets: list[str]
+    groups: dict[str, list[dict]] = None  # group label -> day records, e.g. Ishida's named machines
 
 
 def should_skip_sheet(name: str) -> bool:
@@ -202,6 +204,226 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
     return record, None
 
 
+GROUP_HEADER_KEYWORDS = ("product", "machine", "sku")
+
+# Per-machine-row metric columns, located by exact header text (verified
+# identical across Fry-O/Pops/Ishida/Nimco). Unlike the downtime columns,
+# these aren't found via a start/end marker pair, so each needs its own
+# exact match -- "speed" and "target counter" in particular have other
+# columns nearby ("Speed losses in minutes", "Target Counter in minutes")
+# that a loose substring match would wrongly pick up instead.
+MACHINE_ROW_HEADERS = {
+    "speed": "speed",
+    "run_time": "run time in minutes",
+    "availability_pct": "availability percentage",
+    "actual_count": "actual total count",
+    "performance_pct": "performance percentage",
+    "target_counter": "target counter",
+    "stock_transferred": "good conter transfer to warehouse",
+}
+
+# Production Dept's per-product-row table uses a completely different column
+# set from Packing Dept's (verified identical across Coated Peanut/Namak
+# Para/HNC 1/HNC 3/Extruder/Kuiper) -- tried as a fallback whenever
+# MACHINE_ROW_HEADERS doesn't fully match a sheet. Unlike Packing Dept,
+# "Actual Ouput without Wastage" (good output) / "Output With Wastage"
+# (total output) ARE both tracked per product row here (verified: their
+# ratio reproduces the sheet's own "Quality Percentage" exactly), so
+# Quality %/OEE % are real at this granularity, not forced to "not tracked".
+PRODUCTION_ROW_HEADERS = {
+    "speed": "standard output",
+    "run_time": "run time in minutes",
+    "availability_pct": "availability percentage",
+    "actual_count": "output with wastage",
+    "performance_pct": "performance percentage",
+    "target_counter": "target output with wastage",
+    "stock_transferred": "actual ouput without wastage",  # sic -- real header typo
+}
+
+
+def find_exact_header_column(ws, header_row: int, exact_text: str, max_col: int = 45) -> int | None:
+    target = exact_text.strip().lower()
+    for c in range(1, max_col + 1):
+        v = ws.cell(row=header_row, column=c).value
+        if isinstance(v, str) and v.strip().lower() == target:
+            return c
+    return None
+
+
+# Rows in the machine table that are actually trailing summary labels, not
+# machine/line entries -- they sit between the last real machine row and
+# the "Total" row, in the SAME column used for grouping on Fry-O/Pops, so
+# they'd otherwise be picked up as spurious one-row "groups".
+NON_GROUP_ROW_LABELS = {
+    "oee calculation", "planned capacity utilization",
+    "overall capacity utilization", "global efficiency", "total",
+}
+
+
+def find_group_column(ws, header_row: int, start_row: int, end_row: int) -> tuple[int | None, str | None]:
+    """Finds whichever column names what's running on each machine row --
+    a literal machine name for Ishida ("Machine": Ishida 1/Ishida 2/
+    Simionato), a product/SKU code for Nimco ("SKU": R10 L, R20, ...), or a
+    product name for Fry-O/Pops ("Product"). The header text alone isn't
+    enough to pick the right column: Nimco also has a "Product Name" column
+    that's always blank, and a "machine #" column of numeric ASSET TAGS that
+    isn't the meaningful grouping either -- so any header containing "#" is
+    excluded (an ID/tag column, not a descriptive name/code one), and among
+    what's left, the first keyword-matching column that actually has data
+    in the machine-row range wins."""
+    candidates = []
+    for c in range(1, 10):
+        header = ws.cell(row=header_row, column=c).value
+        if not isinstance(header, str) or "#" in header:
+            continue
+        if any(k in header.lower() for k in GROUP_HEADER_KEYWORDS):
+            candidates.append((c, header.strip()))
+    for c, header in candidates:
+        for r in range(start_row, end_row):
+            v = ws.cell(row=r, column=c).value
+            if v not in (None, "") and str(v).strip().lower() not in NON_GROUP_ROW_LABELS:
+                return c, header
+    return None, None
+
+
+def normalize_group_key(label: str) -> str:
+    """Key used to merge group labels that differ only in whitespace, e.g.
+    Nimco's "R20 L" and "R20L" -- verified to be the SAME line/SKU, not two
+    distinct ones: on every date one spelling appears, the other does too,
+    entered against different individual machine-asset rows on the
+    identical sheet. Treating them as separate 'lines' would silently split
+    one real line's daily totals across two buckets. The canonical display
+    spelling is chosen later, once every sheet's been seen (see
+    parse_workbook), as whichever spelling occurs most often."""
+    return re.sub(r"\s+", "", label).upper()
+
+
+def parse_machine_group_records(
+    ws, sheet_name: str, avail_time: int, act_time: int
+) -> tuple[dict[str, list[dict]], bool | None]:
+    """Extracts one 'virtual shift record' per individual machine/line row,
+    grouped by a whitespace-normalized key of whichever column names it (see
+    find_group_column, normalize_group_key). These reuse the exact same
+    field shape aggregate_day already knows how to combine, so a group's
+    records across multiple shifts/dates are combined with the same SUM/
+    RECOMPUTE/weighted-average rules as whole-shift records -- no separate
+    aggregation logic needed.
+
+    Tries Packing Dept's column layout (MACHINE_ROW_HEADERS) first, falling
+    back to Production Dept's completely different one (PRODUCTION_ROW_HEADERS)
+    if that doesn't fully match -- returns {} (and None) if neither does.
+    The second return value says whether Quality %/OEE % are real at this
+    granularity for whatever layout matched: Packing Dept never tracks good-
+    unit counts per row, but Production Dept does (see PRODUCTION_ROW_HEADERS).
+
+    `avail_time` is the WHOLE SHEET's shared schedule window (from the
+    summary anchor block) -- the same for every row on the shift (verified
+    against real formulas: "Plant operating time" is an absolute-reference
+    constant, not a per-row figure). A line/product often spans multiple
+    rows on one sheet (Packing Dept: many machine-asset rows running the
+    same SKU; Production Dept: the same product occasionally listed twice)
+    -- summing that shared constant once per row would multiply a single
+    shift's time window by its row count, so only the FIRST row seen for a
+    given group on this sheet carries it into the `availTime` field; the
+    rest carry 0. idealTargetOutput stays genuinely per-row-additive (each
+    row's own speed x the shared window), since ideal output CAPACITY really
+    does sum across parallel rows.
+
+    `act_time` (the shared param) is only used for Packing Dept, where every
+    machine runs for the same shared shift duration; Production Dept's rows
+    each have their own real, independently-additive run time (a product
+    occupies its own slice of the shift, not the whole thing), read directly
+    per row instead.
+
+    A row that's entirely zero (no run time, no output, no downtime) is
+    dropped rather than kept as a zero-value day -- Production Dept's sheets
+    list every candidate product every day whether or not it actually ran
+    that shift, so keeping these would flood a rarely-run product's group
+    with meaningless all-zero "days".
+    """
+    header_row, dt_cols = find_downtime_range(ws)
+    total_row = find_total_row(ws)
+    if header_row is None or total_row is None:
+        return {}, None
+
+    group_col, _ = find_group_column(ws, header_row, 7, total_row)
+    if group_col is None:
+        return {}, None
+
+    cols = {key: find_exact_header_column(ws, header_row, text) for key, text in MACHINE_ROW_HEADERS.items()}
+    quality_tracked = False
+    if any(c is None for c in cols.values()):
+        cols = {key: find_exact_header_column(ws, header_row, text) for key, text in PRODUCTION_ROW_HEADERS.items()}
+        quality_tracked = True
+        if any(c is None for c in cols.values()):
+            return {}, None
+
+    by_group: dict[str, list[dict]] = {}
+    seen_time_for_key: set[str] = set()
+    for r in range(7, total_row):
+        group_val = ws.cell(row=r, column=group_col).value
+        if group_val in (None, "") or str(group_val).strip().lower() in NON_GROUP_ROW_LABELS:
+            continue
+        raw_label = str(group_val).strip()
+        key = normalize_group_key(raw_label)
+
+        # Clamped at 0 and rounded to a whole minute: a few real Production
+        # Dept rows compute a NEGATIVE "Run Time in minutes" (a changeover
+        # was logged but the product never actually ran that shift, and the
+        # sheet's own formula subtracts changeover time from a planned time
+        # of 0) -- real downtime, but a negative run time isn't a
+        # meaningful quantity to carry into a displayed total. Some rows
+        # also carry a fractional value (e.g. 6.3) from the sheet's own
+        # proration formula -- actTime is stored as whole minutes.
+        run_time = int(round(max(0, _num(ws.cell(row=r, column=cols["run_time"]).value))))
+        speed = float(_num(ws.cell(row=r, column=cols["speed"]).value))
+        actual_count = int(_num(ws.cell(row=r, column=cols["actual_count"]).value))
+
+        downtime = {
+            (ws.cell(row=header_row, column=c).value or f"Category {c}"): float(_num(ws.cell(row=r, column=c).value))
+            for c in dt_cols
+        }
+
+        if run_time == 0 and actual_count == 0 and not any(downtime.values()):
+            continue  # listed but never run this shift -- not real data
+
+        is_first_for_key = key not in seen_time_for_key
+        seen_time_for_key.add(key)
+
+        # The run time used for the OUTPUT-CAPACITY calc is always the real,
+        # undeduped figure (Production Dept: this row's own run time;
+        # Packing Dept: the shared shift duration) -- output capacity is
+        # genuinely additive per row regardless of layout. The stored
+        # "actTime" bookkeeping FIELD is different: Production Dept's is
+        # already real and per-row (no dedup needed), but Packing Dept's is
+        # the shared shift duration, so -- same reasoning as availTime above
+        # -- only the first row for a group on this sheet carries it there.
+        capacity_act_time = run_time if quality_tracked else act_time
+        stored_act_time = run_time if quality_tracked else (act_time if is_first_for_key else 0)
+
+        record = {
+            "sheet": sheet_name,
+            "rawGroupLabel": raw_label,
+            "availMachines": 1,
+            "actMachines": 1 if run_time > 0 else 0,
+            "avgSpeed": speed,
+            "availTime": avail_time if is_first_for_key else 0,
+            "actTime": stored_act_time,
+            "idealTargetOutput": speed * avail_time,
+            "actualTargetOutput": speed * capacity_act_time,
+            "availabilityPct": float(_num(ws.cell(row=r, column=cols["availability_pct"]).value)),
+            "targetCounter": int(_num(ws.cell(row=r, column=cols["target_counter"]).value)),
+            "actualCounter": actual_count,
+            "performancePct": float(_num(ws.cell(row=r, column=cols["performance_pct"]).value)),
+            "stockTransferred": int(_num(ws.cell(row=r, column=cols["stock_transferred"]).value)),
+            "totalLabor": 0,
+            "downtime": downtime,
+        }
+        by_group.setdefault(key, []).append(record)
+
+    return by_group, (quality_tracked if by_group else None)
+
+
 def is_blank_record(rec: dict) -> bool:
     """A sub-record that contributed nothing real that date -- either a
     leftover empty template copy or an inactive parallel production line
@@ -304,11 +526,14 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
 def parse_workbook(config: ProductConfig) -> ParseResult:
     path = resolve_excel_path(config)
     if path is None:
-        return ParseResult(records=[], errors=[f"no Excel file found for '{config.slug}'"], skipped_sheets=[])
+        return ParseResult(records=[], errors=[f"no Excel file found for '{config.slug}'"], skipped_sheets=[], groups={})
 
     wb = openpyxl.load_workbook(path, data_only=True)
 
     by_date: dict[str, list[dict]] = {}
+    by_group_date: dict[str, dict[str, list[dict]]] = {}  # normalized key -> date -> rows
+    group_label_counts: dict[str, Counter] = {}  # normalized key -> Counter(raw spelling -> occurrences)
+    group_quality_tracked: dict[str, bool] = {}  # normalized key -> whether Quality %/OEE % are real at this granularity
     errors: list[str] = []
     skipped_sheets: list[str] = []
 
@@ -356,8 +581,51 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
         record["shiftLabel"] = shift_label(shift_code)
         by_date.setdefault(date_iso, []).append(record)
 
+        # Per-machine/line breakdown, keyed by (normalized group key, date)
+        # -- e.g. Ishida's named machines or Nimco's SKU codes. Empty for
+        # sheets with no identifiable group column (parse_machine_group_records
+        # degrades gracefully rather than erroring).
+        group_rows_by_key, quality_tracked = parse_machine_group_records(
+            wb[name], name, record["availTime"], record["actTime"]
+        )
+        for key, group_rows in group_rows_by_key.items():
+            by_group_date.setdefault(key, {}).setdefault(date_iso, []).extend(group_rows)
+            group_quality_tracked[key] = quality_tracked
+            counts = group_label_counts.setdefault(key, Counter())
+            for row in group_rows:
+                counts[row["rawGroupLabel"]] += 1
+
     day_records = [aggregate_day(d, recs) for d, recs in by_date.items()]
     day_records.sort(key=lambda r: r["date"])
+
+    # A group with fewer than this many real recorded days is noise -- a
+    # one-off typo'd SKU/status entry (e.g. Nimco's "S/mix", "Moong 20",
+    # each seen on a single day) rather than a real recurring line -- and
+    # isn't worth surfacing as a selectable machine/line.
+    MIN_GROUP_DAYS = 10
+
+    groups = {}
+    for key, dates in by_group_date.items():
+        group_records = [aggregate_day(d, recs) for d, recs in dates.items()]
+        if len(group_records) < MIN_GROUP_DAYS:
+            continue
+        if not group_quality_tracked.get(key):
+            # Packing Dept: "Good units transferred to warehouse" (needed
+            # for Quality %) is only ever populated at the whole-shift
+            # aggregate level, not per machine row -- verified against real
+            # cells across all four products (mostly blank, occasionally a
+            # stray manually-entered value, never a real per-row formula).
+            # Reusing aggregate_day's sum-based Quality %/OEE % here would
+            # silently show a false 0%, so both are explicitly marked
+            # unavailable at this granularity instead. Production Dept
+            # tracks real per-product good/total output, so its groups skip
+            # this and keep the real recomputed Quality %/OEE %.
+            for r in group_records:
+                r["qualityPct"] = None
+                r["oeePct"] = None
+        group_records.sort(key=lambda r: r["date"])
+        display_label = group_label_counts[key].most_common(1)[0][0]
+        groups[display_label] = group_records
 
     # Outlier check: flag any date isolated by a large gap from its neighbors.
     # This is exactly how a real typo was caught in the Nimco file (a sheet
@@ -373,4 +641,4 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
                 f"check for a date typo in one of the source sheet names"
             )
 
-    return ParseResult(records=day_records, errors=errors, skipped_sheets=skipped_sheets)
+    return ParseResult(records=day_records, errors=errors, skipped_sheets=skipped_sheets, groups=groups)

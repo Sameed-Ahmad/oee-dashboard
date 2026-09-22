@@ -8,17 +8,21 @@ from .models import DateRange, DayRecord, ProductSummary
 from .products.registry import ProductConfig
 
 
-def save_cache(slug: str, records: list[dict], warnings: list[str]) -> None:
+def save_cache(slug: str, records: list[dict], warnings: list[str], groups: dict[str, list[dict]] | None = None) -> None:
     path = processed_cache_path(slug)
-    path.write_text(json.dumps({"records": records, "warnings": warnings}, indent=2), encoding="utf-8")
+    payload = {"records": records, "warnings": warnings, "groups": groups or {}}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_cache(slug: str) -> dict | None:
-    """Returns {"records": [...], "warnings": [...]}, or None if no cache file exists yet."""
+    """Returns {"records": [...], "warnings": [...], "groups": {...}}, or
+    None if no cache file exists yet."""
     path = processed_cache_path(slug)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.setdefault("groups", {})  # tolerate caches written before per-machine groups existed
+    return data
 
 
 def compute_summary(config: ProductConfig, records: list[dict], warnings: list[str]) -> ProductSummary:

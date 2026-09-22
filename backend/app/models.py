@@ -54,6 +54,44 @@ class DateRange(BaseModel):
     end: str
 
 
+class MachineDayRecord(BaseModel):
+    """One day's aggregated figures for a single machine/line within a
+    product (e.g. Ishida's named machines, Nimco's SKU codes) -- same shape
+    as DayRecord's own metrics, minus the shift-level detail (shiftCount/
+    shifts), which isn't a meaningful concept at this granularity.
+
+    qualityPct/oeePct are null for Packing Dept machines/SKUs (Ishida,
+    Nimco, ...): "good units transferred to warehouse" (needed for
+    Quality %) is only tracked at the whole-shift level in those workbooks,
+    never reliably per machine row -- verified against real cells, not
+    assumed. Showing a computed 0% would be actively misleading, so it's
+    surfaced as genuinely unavailable instead. Production Dept's per-product
+    rows (HNC 1's Masoor/Peanut/..., Kuiper's FryO variants, ...) DO track
+    real good/total output per row, so theirs are real, non-null values.
+    """
+    date: str
+    availMachines: int
+    availTime: int
+    avgSpeed: float
+    idealTargetOutput: float
+    actMachines: int
+    actTime: int
+    actualTargetOutput: float
+    availabilityPct: float
+    targetCounter: int
+    actualCounter: int
+    performancePct: float
+    stockTransferred: int
+    qualityPct: float | None
+    oeePct: float | None
+    downtime: dict[str, float]
+
+
+class ProductMachines(BaseModel):
+    machines: list[str]
+    records: dict[str, list[MachineDayRecord]]
+
+
 class ProductSummary(BaseModel):
     slug: str
     displayName: str

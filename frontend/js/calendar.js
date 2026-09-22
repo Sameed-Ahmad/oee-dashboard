@@ -59,7 +59,14 @@ const Calendar = (() => {
 
   // Renders the calendar grid for `monthKey` ("YYYY-MM") into `gridEl`.
   // recordsByDate: { "YYYY-MM-DD": DayRecord }
-  function renderMonth(gridEl, monthKey, recordsByDate, selectedDate, onSelectDay) {
+  //
+  // `selection` describes what to highlight:
+  //   { type: "day", date }                -- a single selected day
+  //   { type: "range", start, end }        -- a confirmed date range
+  //   { type: "pending", start }           -- range-select in progress,
+  //                                            awaiting the end date
+  //   null                                  -- nothing highlighted (Overview)
+  function renderMonth(gridEl, monthKey, recordsByDate, selection, onSelectDay) {
     gridEl.innerHTML = "";
 
     for (const label of DOW_LABELS) {
@@ -87,7 +94,16 @@ const Calendar = (() => {
       cell.textContent = String(day);
 
       if (record) {
-        cell.className = "calendar-day" + (dateStr === selectedDate ? " selected" : "");
+        const classes = ["calendar-day"];
+        if (selection) {
+          if (selection.type === "day" && dateStr === selection.date) classes.push("selected");
+          if (selection.type === "pending" && dateStr === selection.start) classes.push("range-endpoint");
+          if (selection.type === "range") {
+            if (dateStr === selection.start || dateStr === selection.end) classes.push("range-endpoint");
+            if (dateStr >= selection.start && dateStr <= selection.end) classes.push("in-range");
+          }
+        }
+        cell.className = classes.join(" ");
         const dot = document.createElement("span");
         dot.className = `dot dot-${oeeTier(record.oeePct)}`;
         cell.appendChild(dot);
@@ -108,8 +124,15 @@ const Calendar = (() => {
     }
   }
 
+  // The available (has-data) dates within one "YYYY-MM" month, sorted.
+  function datesInMonth(recordsByDate, monthKey) {
+    return Object.keys(recordsByDate)
+      .filter((d) => d.startsWith(monthKey))
+      .sort();
+  }
+
   return {
     monthsFromDates, monthLabel, monthNameOnly, renderMonth, oeeTier,
-    yearsFromMonths, monthsInYear, closestMonthInYear,
+    yearsFromMonths, monthsInYear, closestMonthInYear, datesInMonth,
   };
 })();

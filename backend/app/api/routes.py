@@ -16,6 +16,7 @@ from ..models import (
     DepartmentOverview,
     DepartmentProductEntry,
     ProductInfo,
+    ProductMachines,
     ProductOrgInfo,
     ProductSummary,
     SlugName,
@@ -43,40 +44,50 @@ from ..products.registry import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
-# In-memory cache of parsed records + warnings, keyed by product slug.
+# In-memory cache of parsed records + warnings + machine groups, keyed by product slug.
 _records_by_slug: dict[str, list[dict]] = {}
 _warnings_by_slug: dict[str, list[str]] = {}
+_groups_by_slug: dict[str, dict[str, list[dict]]] = {}
 
 
-def _load(slug: str) -> tuple[list[dict], list[str]]:
-    """Loads (records, warnings) for a product, cache-first. Products with no
-    excel_dir registered yet return ([], []) without attempting to parse."""
+def _load(slug: str) -> tuple[list[dict], list[str], dict[str, list[dict]]]:
+    """Loads (records, warnings, groups) for a product, cache-first.
+    Products with no excel_dir registered yet return ([], [], {}) without
+    attempting to parse."""
     if slug in _records_by_slug:
-        return _records_by_slug[slug], _warnings_by_slug[slug]
+        return _records_by_slug[slug], _warnings_by_slug[slug], _groups_by_slug[slug]
 
     config = PRODUCTS[slug]
     if config.excel_dir is None:
-        records, warnings = [], []
+        records, warnings, groups = [], [], {}
     else:
         cached = load_cache(slug)
         if cached is None:
             logger.warning("no cache found for '%s', building it now", slug)
             result = parse_workbook(config)
-            records, warnings = result.records, result.errors
-            save_cache(slug, records, warnings)
+            records, warnings, groups = result.records, result.errors, result.groups or {}
+            save_cache(slug, records, warnings, groups)
         else:
-            records, warnings = cached["records"], cached["warnings"]
+            records, warnings, groups = cached["records"], cached["warnings"], cached["groups"]
 
     _records_by_slug[slug] = records
     _warnings_by_slug[slug] = warnings
-    return records, warnings
+    _groups_by_slug[slug] = groups
+    return records, warnings, groups
 
 
 def _get_records(slug: str) -> list[dict]:
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
-    records, _ = _load(slug)
+    records, _, _ = _load(slug)
     return records
+
+
+def _get_groups(slug: str) -> dict[str, list[dict]]:
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    _, _, groups = _load(slug)
+    return groups
 
 
 def product_has_data(slug: str) -> bool:
@@ -133,8 +144,19 @@ def get_overview(slug: str):
     records = _get_records(slug)
     if not records:
         raise HTTPException(status_code=404, detail=f"no records for '{slug}'")
-    _, warnings = _load(slug)
+    _, warnings, _ = _load(slug)
     return compute_summary(PRODUCTS[slug], records, warnings)
+
+
+@router.get("/products/{slug}/machines", response_model=ProductMachines)
+def get_product_machines(slug: str):
+    """Per-machine/line breakdown for a product (e.g. Ishida's named
+    machines, Nimco's SKU codes). Empty for products with no identifiable
+    grouping column -- see parser.find_group_column."""
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    groups = _get_groups(slug)
+    return ProductMachines(machines=sorted(groups.keys()), records=groups)
 
 
 @router.post("/products/{slug}/refresh", response_model=ProductSummary)
@@ -152,9 +174,11 @@ def refresh_product(slug: str):
             detail=f"refresh produced 0 records for '{slug}': {result.errors}",
         )
 
-    save_cache(slug, result.records, result.errors)
+    groups = result.groups or {}
+    save_cache(slug, result.records, result.errors, groups)
     _records_by_slug[slug] = result.records
     _warnings_by_slug[slug] = result.errors
+    _groups_by_slug[slug] = groups
     return compute_summary(config, result.records, result.errors)
 
 
@@ -196,7 +220,7 @@ def get_department_overview(dept_slug: str):
         if not product_has_data(p.slug):
             continue
         records = _get_records(p.slug)
-        _, warnings = _load(p.slug)
+        _, warnings, _ = _load(p.slug)
         summary = compute_summary(p, records, warnings)
         entries.append(DepartmentProductEntry(slug=p.slug, displayName=p.display_name, summary=summary))
 
@@ -217,7 +241,7 @@ def get_unit_overview(unit_slug: str):
             if not product_has_data(p.slug):
                 continue
             records = _get_records(p.slug)
-            _, warnings = _load(p.slug)
+            _, warnings, _ = _load(p.slug)
             summaries.append(compute_summary(p, records, warnings))
 
         if not summaries:

@@ -42,7 +42,11 @@ def build_one(config: ProductConfig) -> None:
     else:
         print("  Data quality warnings: none")
 
-    save_cache(config.slug, result.records, result.errors)
+    groups = result.groups or {}
+    if groups:
+        print(f"  Machine/line breakdown: {', '.join(sorted(groups.keys()))}")
+
+    save_cache(config.slug, result.records, result.errors, groups)
     print(f"  Wrote {len(result.records)} records to backend/data/processed/{config.slug}.json")
     print()
 

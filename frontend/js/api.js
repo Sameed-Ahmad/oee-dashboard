@@ -34,5 +34,6 @@ const Api = (() => {
     getDepartment: (slug) => get(`/departments/${slug}`),
     getDepartmentOverview: (slug) => get(`/departments/${slug}/overview`),
     getUnitOverview: (slug) => get(`/units/${slug}/overview`),
+    getMachines: (slug) => get(`/products/${slug}/machines`),
   };
 })();

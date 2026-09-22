@@ -15,11 +15,19 @@ const Product = (() => {
     allDates: [],
     recordsByDate: {},
     allRecords: [], // sorted ascending by date, day-level (combined) records
+    machines: [], // group labels for this product, e.g. Ishida's named machines
+    selectedMachines: [], // [] = whole-product view; 1 = single machine; 2+ = compared/combined
+    machineRecordsByDate: {}, // { machineLabel: { date: record } }
+    machineAllRecords: {}, // { machineLabel: [records sorted ascending] }
     availableMonths: [], // "YYYY-MM", sorted
-    mode: "overview", // "overview" | "day"
+    mode: "overview", // "overview" | "day" | "range"
     selectedDate: null,
     selectedShift: "combined", // "combined" | a shiftCode from that day's shifts[]
+    selectedRangeStart: null,
+    selectedRangeEnd: null,
     calendarMonthKey: null,
+    calendarSelectMode: "day", // "day" | "range" -- controls what a calendar-day click does
+    pendingRangeStart: null, // set after the first click while calendarSelectMode === "range"
     trendRangeMode: "recent", // "recent" | "full"
   };
 
@@ -32,11 +40,20 @@ const Product = (() => {
       state.mode = "overview";
       state.selectedDate = null;
       state.selectedShift = "combined";
+      state.selectedRangeStart = null;
+      state.selectedRangeEnd = null;
+      state.calendarSelectMode = "day";
+      state.pendingRangeStart = null;
       state.trendRangeMode = "recent";
+      state.selectedMachines = [];
+      state.machines = [];
+      state.machineRecordsByDate = {};
+      state.machineAllRecords = {};
 
-      const [overview, allDates] = await Promise.all([
+      const [overview, allDates, machines] = await Promise.all([
         Api.getOverview(slug),
         Api.listDays(slug),
+        Api.getMachines(slug),
       ]);
       state.overview = overview;
       state.allDates = allDates;
@@ -58,13 +75,170 @@ const Product = (() => {
       state.availableMonths = Calendar.monthsFromDates(allDates);
       state.calendarMonthKey = state.availableMonths[state.availableMonths.length - 1];
 
+      state.machines = machines.machines;
+      state.machines.forEach((m) => {
+        const recs = (machines.records[m] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+        state.machineAllRecords[m] = recs;
+        state.machineRecordsByDate[m] = {};
+        recs.forEach((r) => { state.machineRecordsByDate[m][r.date] = r; });
+      });
+
       wireControlsOnce();
     }
 
     renderProductTabs();
     renderHeader();
+    renderMachineSelector();
     setTrendToggle("recent");
     render();
+  }
+
+  // ---------- Machine/line data-source resolution ----------
+
+  // Combines 2+ selected machines'/lines' day records for the SAME DATE into
+  // one. Additive fields (machines run, output, downtime) sum normally --
+  // each line has its own. availTime/actTime don't: they're the plant's
+  // shared shift-schedule window, not per-line, so two lines both reporting
+  // a Day+Night shift both report the SAME ~1020 minutes -- summing across
+  // lines would double-count that one wall-clock window, so the widest one
+  // observed is used instead (a line that only ran Day shift shouldn't
+  // shrink the window below what a Day+Night line already revealed).
+  function combineLineRecords(records) {
+    const sum = (key) => records.reduce((s, r) => s + r[key], 0);
+    const max = (key) => records.reduce((m, r) => Math.max(m, r[key]), 0);
+    const sumActMachines = sum("actMachines");
+    const sumActualCounter = sum("actualCounter");
+    const sumStock = sum("stockTransferred");
+
+    const availPctWeightSum = records.reduce((s, r) => s + r.availabilityPct * r.actMachines, 0);
+    const availabilityPct = sumActMachines ? availPctWeightSum / sumActMachines : 0;
+
+    const perfWeightSum = records.reduce((s, r) => s + r.performancePct * r.actualCounter, 0);
+    const performancePct = sumActualCounter ? perfWeightSum / sumActualCounter : 0;
+
+    const speedWeightSum = records.reduce((s, r) => s + r.avgSpeed * r.actualCounter, 0);
+    const avgSpeed = sumActualCounter ? speedWeightSum / sumActualCounter : sum("avgSpeed") / records.length;
+
+    // Packing Dept lines never track Quality % per line (qualityPct is
+    // always null there); Production Dept lines do -- recompute it from the
+    // summed good/total output, same ratio-of-sums the day-level aggregation
+    // already uses, rather than just carrying one line's own figure over.
+    const hasQuality = records[0].qualityPct != null;
+    const qualityPct = hasQuality && sumActualCounter ? (sumStock / sumActualCounter) * 100 : (hasQuality ? 0 : null);
+    const oeePct = hasQuality ? (availabilityPct * performancePct * qualityPct) / 10000 : null;
+
+    const downtime = {};
+    records.forEach((r) => {
+      Object.entries(r.downtime).forEach(([k, v]) => { downtime[k] = (downtime[k] || 0) + v; });
+    });
+
+    return {
+      date: records[0].date,
+      availMachines: sum("availMachines"),
+      actMachines: sumActMachines,
+      avgSpeed: Math.round(avgSpeed * 100) / 100,
+      availTime: max("availTime"),
+      actTime: max("actTime"),
+      idealTargetOutput: Math.round(sum("idealTargetOutput") * 10) / 10,
+      actualTargetOutput: Math.round(sum("actualTargetOutput") * 10) / 10,
+      availabilityPct: Math.round(availabilityPct * 100) / 100,
+      targetCounter: sum("targetCounter"),
+      actualCounter: sumActualCounter,
+      performancePct: Math.round(performancePct * 100) / 100,
+      stockTransferred: sumStock,
+      qualityPct: qualityPct == null ? null : Math.round(qualityPct * 100) / 100,
+      oeePct: oeePct == null ? null : Math.round(oeePct * 100) / 100,
+      downtime,
+    };
+  }
+
+  // Resolves the current data source: the whole product (no machine
+  // selected), one machine/line's own records, or -- when 2+ are selected
+  // for comparison -- their per-date combination.
+  function machineData() {
+    const sel = state.selectedMachines;
+    if (sel.length === 0) return { byDate: state.recordsByDate, all: state.allRecords };
+    if (sel.length === 1) return { byDate: state.machineRecordsByDate[sel[0]], all: state.machineAllRecords[sel[0]] };
+
+    const byDate = {};
+    sel.forEach((m) => {
+      Object.values(state.machineRecordsByDate[m] || {}).forEach((r) => {
+        (byDate[r.date] = byDate[r.date] || []).push(r);
+      });
+    });
+    const combinedByDate = {};
+    Object.keys(byDate).forEach((date) => { combinedByDate[date] = combineLineRecords(byDate[date]); });
+    const combinedAll = Object.values(combinedByDate).sort((a, b) => a.date.localeCompare(b.date));
+    return { byDate: combinedByDate, all: combinedAll };
+  }
+
+  function currentRecordsByDate() {
+    return machineData().byDate;
+  }
+
+  function currentAllRecords() {
+    return machineData().all;
+  }
+
+  function machineSuffixText() {
+    const sel = state.selectedMachines;
+    return sel.length ? ` — ${sel.join(" + ")}` : "";
+  }
+
+  function setSelectedMachines(list) {
+    state.selectedMachines = list;
+    // Reset to Overview on any selection change -- a day/range picked for
+    // the previous selection may not have data for the new one.
+    state.mode = "overview";
+    state.selectedDate = null;
+    state.selectedShift = "combined";
+    state.selectedRangeStart = null;
+    state.selectedRangeEnd = null;
+    setTrendToggle("recent");
+    renderMachineSelector();
+    render();
+  }
+
+  function renderMachineSelector() {
+    const row = el("machineSelectorRow");
+    if (state.machines.length === 0) {
+      row.style.display = "none";
+      return;
+    }
+    row.style.display = "";
+
+    const seg = el("machineSegmented");
+    seg.innerHTML = "";
+
+    const allBtn = document.createElement("button");
+    allBtn.type = "button";
+    allBtn.textContent = "All machines";
+    allBtn.className = state.selectedMachines.length === 0 ? "active" : "";
+    allBtn.addEventListener("click", () => {
+      if (state.selectedMachines.length === 0) return;
+      setSelectedMachines([]);
+    });
+    seg.appendChild(allBtn);
+
+    state.machines.forEach((m) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = m;
+      btn.className = state.selectedMachines.includes(m) ? "active" : "";
+      btn.addEventListener("click", () => {
+        const idx = state.selectedMachines.indexOf(m);
+        const next = idx === -1
+          ? state.selectedMachines.concat(m)
+          : state.selectedMachines.filter((x) => x !== m);
+        setSelectedMachines(next);
+      });
+      seg.appendChild(btn);
+    });
+
+    const hint = el("machineSelectorHint");
+    hint.textContent = state.selectedMachines.length > 1
+      ? `Comparing ${state.selectedMachines.length} lines (combined totals) — click a highlighted one to remove it.`
+      : "Click one to drill in, or click several to compare/combine them.";
   }
 
   // ---------- Header / tabs ----------
@@ -95,12 +269,16 @@ const Product = (() => {
   // ---------- Active-record resolution (combined day vs one shift) ----------
 
   function activeDay() {
-    return state.recordsByDate[state.selectedDate];
+    return currentRecordsByDate()[state.selectedDate];
   }
 
   function activeRecord() {
     const day = activeDay();
     if (!day) return null;
+    // Machine/line-level day records have no shift breakdown of their own
+    // (a "machine" here is a product/SKU/machine-name grouping across the
+    // whole day, not a Day/Night shift) -- always show the combined figures.
+    if (state.selectedMachines.length > 0) return day;
     if (state.selectedShift === "combined") return day;
     return day.shifts.find((s) => s.shiftCode === state.selectedShift) || day;
   }
@@ -108,7 +286,7 @@ const Product = (() => {
   // ---------- Recent-window helper for the trend chart (always day-level) ----------
 
   function getRecentWindow(endDate, size = 60) {
-    const records = state.allRecords;
+    const records = currentAllRecords();
     let endIdx = records.length - 1;
     if (endDate) {
       const idx = records.findIndex((r) => r.date === endDate);
@@ -123,62 +301,184 @@ const Product = (() => {
   function render() {
     if (state.mode === "overview") {
       renderOverviewMode();
+    } else if (state.mode === "range") {
+      renderRangeMode();
     } else {
       renderDayMode();
     }
     renderTrendSection();
   }
 
+  function recordsInSelectedRange() {
+    return currentAllRecords().filter(
+      (r) => r.date >= state.selectedRangeStart && r.date <= state.selectedRangeEnd,
+    );
+  }
+
+  // Same shape of aggregation as the backend's ProductSummary, computed
+  // client-side over an arbitrary user-picked date range (we already have
+  // every day record loaded, so no new endpoint is needed for this).
+  function computeRangeSummary(records) {
+    const n = records.length;
+    const avg = (key) => records.reduce((sum, r) => sum + r[key], 0) / n;
+    // Packing Dept machine/line records always have oeePct/qualityPct ==
+    // null (Quality % isn't tracked at that granularity there -- see
+    // MachineDayRecord); Production Dept's are real. Whichever it is here,
+    // fall back to ranking best/toughest by Availability % when OEE isn't
+    // available, so the tiles still mean something.
+    const hasOee = records[0].oeePct != null;
+    const rankKey = hasOee ? "oeePct" : "availabilityPct";
+
+    const downtimeTotals = {};
+    records.forEach((r) => {
+      Object.entries(r.downtime).forEach(([k, v]) => {
+        downtimeTotals[k] = (downtimeTotals[k] || 0) + v;
+      });
+    });
+
+    const bestDay = records.reduce((a, b) => (b[rankKey] > a[rankKey] ? b : a));
+    const worstDay = records.reduce((a, b) => (b[rankKey] < a[rankKey] ? b : a));
+
+    return {
+      daysCount: n,
+      avgOeePct: hasOee ? avg("oeePct") : null,
+      avgAvailabilityPct: avg("availabilityPct"),
+      avgPerformancePct: avg("performancePct"),
+      avgQualityPct: hasOee ? avg("qualityPct") : null,
+      avgActMachines: avg("actMachines"),
+      avgAvailMachines: avg("availMachines"),
+      bestDay,
+      worstDay,
+      rankedBy: rankKey,
+      downtimeTotals,
+    };
+  }
+
+  // ---------- Shared display helpers for a possibly-untracked OEE/Quality ----------
+
+  function displayHeroOee(oeePct) {
+    if (oeePct == null) {
+      el("heroOeeValue").textContent = "—";
+      el("heroTierTag").textContent = "OEE not tracked per machine";
+      el("heroTierTag").className = "tier-tag tier-neutral";
+      return;
+    }
+    el("heroOeeValue").textContent = Utils.pct(oeePct);
+    const tier = Utils.tierFor(oeePct);
+    el("heroTierTag").textContent = tier.label;
+    el("heroTierTag").className = "tier-tag " + tier.cls;
+  }
+
+  function displayQualityBar(qualityPct) {
+    if (qualityPct == null) {
+      el("barQualValue").textContent = "Not tracked";
+      el("barQualFill").style.width = "0%";
+      return;
+    }
+    setBar("Qual", qualityPct);
+  }
+
+  function bestWorstTileLabel(rankedBy) {
+    // Only call out the ranking criterion when it's the Availability
+    // fallback (machine/line mode) -- the normal OEE-ranked case keeps the
+    // plain "Best day" wording it always had.
+    return rankedBy === "availabilityPct" ? " (Availability)" : "";
+  }
+
+  function bestWorstTileValue(day, rankedBy) {
+    return rankedBy === "availabilityPct"
+      ? `${day.availabilityPct}% Avail`
+      : `${day.oeePct}% OEE`;
+  }
+
+  function renderRangeMode() {
+    const records = recordsInSelectedRange();
+    const rangeLabel = `${Utils.formatDateShort(state.selectedRangeStart)} – ${Utils.formatDateShort(state.selectedRangeEnd)}`;
+
+    el("dateSelectorLabel").textContent = rangeLabel;
+    el("shiftToggleRow").style.display = "none";
+
+    const summary = computeRangeSummary(records);
+
+    el("heroLabel").textContent = `Average OEE — ${rangeLabel}`;
+    displayHeroOee(summary.avgOeePct);
+
+    setBar("Avail", summary.avgAvailabilityPct);
+    setBar("Perf", summary.avgPerformancePct);
+    displayQualityBar(summary.avgQualityPct);
+
+    el("kpiStrip").innerHTML = "";
+    addKpiTile("Days measured", String(summary.daysCount), rangeLabel);
+    addKpiTile("Avg. machines used", summary.avgActMachines.toFixed(1), `of ${summary.avgAvailMachines.toFixed(1)} available on average`);
+    addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
+    addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
+
+    el("outputPanelSub").textContent = "Ideal vs. actual output for the selected range";
+    Charts.renderOutputChartOverview("outputChart", records);
+
+    el("downtimePanelSub").textContent = "Downtime minutes by cause, summed across the selected range";
+    Charts.renderDowntimeChart("downtimeChart", summary.downtimeTotals);
+    el("downtimeCallout").innerHTML = Charts.biggestCauseCallout(summary.downtimeTotals);
+  }
+
   function renderOverviewMode() {
-    const ov = state.overview;
+    const hasMachine = state.selectedMachines.length > 0;
+    const records = currentAllRecords();
+    // A machine/line has no backend-precomputed summary -- but we already
+    // load every one of its day records up front, so the same client-side
+    // aggregation used for date ranges works here too (same field shape).
+    const summary = hasMachine ? computeRangeSummary(records) : state.overview;
+    const rangeStart = hasMachine ? records[0].date : state.overview.dateRange.start;
+    const rangeEnd = hasMachine ? records[records.length - 1].date : state.overview.dateRange.end;
+    const machineSuffix = machineSuffixText();
+
     el("dateSelectorLabel").textContent =
-      `Overview — ${Utils.formatDateShort(ov.dateRange.start)} to ${Utils.formatDateShort(ov.dateRange.end)}`;
+      `Overview — ${Utils.formatDateShort(rangeStart)} to ${Utils.formatDateShort(rangeEnd)}`;
 
     el("shiftToggleRow").style.display = "none";
 
-    el("heroLabel").textContent = "All-time average OEE";
-    el("heroOeeValue").textContent = Utils.pct(ov.avgOeePct);
-    const tier = Utils.tierFor(ov.avgOeePct);
-    el("heroTierTag").textContent = tier.label;
-    el("heroTierTag").className = "tier-tag " + tier.cls;
+    el("heroLabel").textContent = "All-time average OEE" + machineSuffix;
+    displayHeroOee(summary.avgOeePct);
 
-    setBar("Avail", ov.avgAvailabilityPct);
-    setBar("Perf", ov.avgPerformancePct);
-    setBar("Qual", ov.avgQualityPct);
+    setBar("Avail", summary.avgAvailabilityPct);
+    setBar("Perf", summary.avgPerformancePct);
+    displayQualityBar(summary.avgQualityPct);
 
     el("kpiStrip").innerHTML = "";
-    addKpiTile("Days measured", String(ov.daysCount), `${ov.dateRange.start} – ${ov.dateRange.end}`);
-    addKpiTile("Avg. machines used", ov.avgActMachines.toFixed(1), `of ${ov.avgAvailMachines.toFixed(1)} available on average`);
-    addKpiTile("Best day", `${ov.bestDay.oeePct}% OEE`, Utils.formatDateShort(ov.bestDay.date));
-    addKpiTile("Toughest day", `${ov.worstDay.oeePct}% OEE`, Utils.formatDateShort(ov.worstDay.date));
+    addKpiTile("Days measured", String(summary.daysCount), `${rangeStart} – ${rangeEnd}`);
+    addKpiTile("Avg. machines used", summary.avgActMachines.toFixed(1), `of ${summary.avgAvailMachines.toFixed(1)} available on average`);
+    addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
+    addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
 
-    el("outputPanelSub").textContent = "Ideal vs. actual output, weekly totals across the full dataset";
-    Charts.renderOutputChartOverview("outputChart", state.allRecords);
+    el("outputPanelSub").textContent = "Ideal vs. actual output, weekly totals across the full dataset" + machineSuffix;
+    Charts.renderOutputChartOverview("outputChart", records);
 
-    el("downtimePanelSub").textContent = "Downtime minutes by cause, summed across the full dataset";
-    Charts.renderDowntimeChart("downtimeChart", ov.downtimeTotals);
-    el("downtimeCallout").innerHTML = Charts.biggestCauseCallout(ov.downtimeTotals);
+    el("downtimePanelSub").textContent = "Downtime minutes by cause, summed across the full dataset" + machineSuffix;
+    Charts.renderDowntimeChart("downtimeChart", summary.downtimeTotals);
+    el("downtimeCallout").innerHTML = Charts.biggestCauseCallout(summary.downtimeTotals);
   }
 
   function renderDayMode() {
     const day = activeDay();
     const r = activeRecord();
-    const isShiftView = state.selectedShift !== "combined";
+    const hasMachine = state.selectedMachines.length > 0;
+    const isShiftView = !hasMachine && state.selectedShift !== "combined";
 
-    const shiftSuffix = isShiftView ? ` — ${shiftLabelFor(state.selectedShift)} shift` : "";
+    const suffix = isShiftView ? ` — ${shiftLabelFor(state.selectedShift)} shift` : machineSuffixText();
     el("dateSelectorLabel").textContent = Utils.formatDateLong(day.date);
 
-    renderShiftToggle(day);
+    if (hasMachine) {
+      el("shiftToggleRow").style.display = "none"; // no shift breakdown at machine/line granularity
+    } else {
+      renderShiftToggle(day);
+    }
 
-    el("heroLabel").textContent = Utils.formatDateLong(day.date) + shiftSuffix;
-    el("heroOeeValue").textContent = Utils.pct(r.oeePct);
-    const tier = Utils.tierFor(r.oeePct);
-    el("heroTierTag").textContent = tier.label;
-    el("heroTierTag").className = "tier-tag " + tier.cls;
+    el("heroLabel").textContent = Utils.formatDateLong(day.date) + suffix;
+    displayHeroOee(r.oeePct);
 
     setBar("Avail", r.availabilityPct);
     setBar("Perf", r.performancePct);
-    setBar("Qual", r.qualityPct);
+    displayQualityBar(r.qualityPct);
 
     el("kpiStrip").innerHTML = "";
     addKpiTile("Machines run", `${r.actMachines} / ${r.availMachines}`, "actual vs. available machines");
@@ -188,16 +488,16 @@ const Product = (() => {
       "click for downtime breakdown",
       () => openDowntimeModal(),
     );
-    addKpiTile("Units produced", r.actualCounter.toLocaleString(), isShiftView ? r.sheet : day.sheets.join(", "));
+    addKpiTile("Units produced", r.actualCounter.toLocaleString(), isShiftView ? r.sheet : (hasMachine ? state.selectedMachines.join(" + ") : day.sheets.join(", ")));
 
     el("outputPanelSub").textContent = isShiftView
       ? `Ideal vs. achievable vs. actual output for this shift`
-      : "Ideal vs. achievable vs. actual output for this day";
+      : "Ideal vs. achievable vs. actual output for this day" + suffix;
     Charts.renderOutputChartDay("outputChart", r);
 
     el("downtimePanelSub").textContent = isShiftView
       ? "Downtime minutes by cause for this shift"
-      : "Downtime minutes by cause for this day";
+      : "Downtime minutes by cause for this day" + suffix;
     Charts.renderDowntimeChart("downtimeChart", r.downtime);
     el("downtimeCallout").innerHTML = Charts.biggestCauseCallout(r.downtime);
   }
@@ -245,9 +545,20 @@ const Product = (() => {
   }
 
   function renderTrendSection() {
+    el("trendToggle").style.display = state.mode === "range" ? "none" : "";
+
+    if (state.mode === "range") {
+      const records = recordsInSelectedRange();
+      // Longer ranges fall back to weekly aggregation for legibility, same
+      // threshold-free reasoning as the "full range" toggle elsewhere.
+      const mode = records.length > 90 ? "full" : "recent";
+      Charts.renderTrendChart("trendChart", records, mode);
+      return;
+    }
+
     const endDate = state.mode === "day" ? state.selectedDate : null;
     const records = state.trendRangeMode === "full"
-      ? state.allRecords
+      ? currentAllRecords()
       : getRecentWindow(endDate, 60);
     Charts.renderTrendChart("trendChart", records, state.trendRangeMode);
   }
@@ -274,8 +585,10 @@ const Product = (() => {
   function openDowntimeModal() {
     const day = activeDay();
     const r = activeRecord();
-    const isShiftView = state.selectedShift !== "combined";
-    const suffix = isShiftView ? ` — ${shiftLabelFor(state.selectedShift)} shift` : "";
+    const isShiftView = state.selectedMachines.length === 0 && state.selectedShift !== "combined";
+    const suffix = isShiftView
+      ? ` — ${shiftLabelFor(state.selectedShift)} shift`
+      : machineSuffixText();
     el("downtimeModalTitle").textContent = `Downtime breakdown — ${Utils.formatDateLong(day.date)}${suffix}`;
     Modal.open(el("downtimeModalOverlay"));
     requestAnimationFrame(() => Charts.renderDowntimeChart("downtimeModalChart", r.downtime));
@@ -286,9 +599,77 @@ const Product = (() => {
   function openDateModal() {
     if (state.mode === "day") {
       state.calendarMonthKey = state.selectedDate.slice(0, 7);
+    } else if (state.mode === "range") {
+      state.calendarMonthKey = state.selectedRangeEnd.slice(0, 7);
     }
+    state.calendarSelectMode = state.mode === "range" ? "range" : "day";
+    state.pendingRangeStart = null;
+    setCalendarModeToggle(state.calendarSelectMode);
     renderCalendarMonth();
     Modal.open(el("dateModalOverlay"));
+  }
+
+  function setCalendarModeToggle(mode) {
+    state.calendarSelectMode = mode;
+    state.pendingRangeStart = null;
+    document.querySelectorAll("#calendarModeToggle button").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.mode === mode);
+    });
+  }
+
+  function updateRangeHint() {
+    const hint = el("rangeHint");
+    if (state.calendarSelectMode !== "range") {
+      hint.innerHTML = "&nbsp;";
+    } else if (state.pendingRangeStart) {
+      hint.textContent = `Start: ${Utils.formatDateShort(state.pendingRangeStart)} — now click an end date.`;
+    } else {
+      hint.textContent = "Click a start date, then an end date — or click the month name for the whole month.";
+    }
+  }
+
+  function calendarSelection() {
+    if (state.calendarSelectMode === "range") {
+      if (state.pendingRangeStart) return { type: "pending", start: state.pendingRangeStart };
+      if (state.mode === "range") return { type: "range", start: state.selectedRangeStart, end: state.selectedRangeEnd };
+      return null;
+    }
+    return state.mode === "day" ? { type: "day", date: state.selectedDate } : null;
+  }
+
+  function applyRange(start, end) {
+    state.mode = "range";
+    state.selectedRangeStart = start <= end ? start : end;
+    state.selectedRangeEnd = start <= end ? end : start;
+    state.pendingRangeStart = null;
+    setTrendToggle("recent");
+    Modal.close(el("dateModalOverlay"));
+    render();
+  }
+
+  function onCalendarDayClick(dateStr) {
+    if (state.calendarSelectMode === "range") {
+      if (!state.pendingRangeStart) {
+        state.pendingRangeStart = dateStr;
+        updateRangeHint();
+        renderCalendarMonth();
+      } else {
+        applyRange(state.pendingRangeStart, dateStr);
+      }
+      return;
+    }
+    state.mode = "day";
+    state.selectedDate = dateStr;
+    state.selectedShift = "combined";
+    setTrendToggle("recent");
+    Modal.close(el("dateModalOverlay"));
+    render();
+  }
+
+  function onMonthLabelClick() {
+    const dates = Calendar.datesInMonth(currentRecordsByDate(), state.calendarMonthKey);
+    if (dates.length === 0) return;
+    applyRange(dates[0], dates[dates.length - 1]);
   }
 
   function renderCalendarMonth() {
@@ -297,20 +678,14 @@ const Product = (() => {
     el("calPrevBtn").disabled = idx <= 0;
     el("calNextBtn").disabled = idx === -1 || idx >= state.availableMonths.length - 1;
     syncYearSelect();
+    updateRangeHint();
 
     Calendar.renderMonth(
       el("calendarGrid"),
       state.calendarMonthKey,
-      state.recordsByDate,
-      state.mode === "day" ? state.selectedDate : null,
-      (dateStr) => {
-        state.mode = "day";
-        state.selectedDate = dateStr;
-        state.selectedShift = "combined";
-        setTrendToggle("recent");
-        Modal.close(el("dateModalOverlay"));
-        render();
-      },
+      currentRecordsByDate(),
+      calendarSelection(),
+      onCalendarDayClick,
     );
   }
 
@@ -357,10 +732,21 @@ const Product = (() => {
       state.mode = "overview";
       state.selectedDate = null;
       state.selectedShift = "combined";
+      state.selectedRangeStart = null;
+      state.selectedRangeEnd = null;
       setTrendToggle("recent");
       Modal.close(el("dateModalOverlay"));
       render();
     });
+
+    document.querySelectorAll("#calendarModeToggle button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setCalendarModeToggle(btn.dataset.mode);
+        renderCalendarMonth();
+      });
+    });
+
+    el("calMonthLabel").addEventListener("click", onMonthLabelClick);
 
     el("calPrevBtn").addEventListener("click", () => {
       const idx = state.availableMonths.indexOf(state.calendarMonthKey);

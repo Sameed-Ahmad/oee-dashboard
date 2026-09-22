@@ -66,6 +66,33 @@ Production Dept); click a department card to see its product comparison,
 then a product card (or the tab bar once inside a product's dashboard) to
 drill into its full OEE view.
 
+On a department page, check the **"Compare"** box on 2 or more product
+cards (e.g. HNC 1 and HNC 3) to open a side-by-side comparison: KPI cards,
+a grouped Availability/Performance/Quality/OEE bar chart, a weekly-average
+OEE-over-time line per product (fetched on demand, aligned on shared
+calendar weeks so products with different date ranges still line up), and
+downtime Pareto charts side by side. "Clear comparison" or unchecking back
+down to 1 product closes it; clicking a card's body (not its checkbox)
+still navigates to that product's own dashboard as before.
+
+Inside a product's dashboard, the calendar date-picker (the pill button up
+top) supports three ways to scope the view:
+- **A single day** (the default) or a **custom date range** — switch the
+  "Single day"/"Date range" tab inside the picker, then click a start day
+  and an end day (or click the month name to select that whole month).
+- **A specific machine/line** within the product, where the data supports
+  it — Packing Dept's named machines/SKU codes (Ishida, Nimco, ...) and
+  Production Dept's individual products (HNC 1's Masoor/Peanut/Sev/...,
+  Kuiper's FryO variants, ...) alike — a "Machine / line" tab bar appears
+  above the hero section. Click one to drill into it alone, or click
+  several to compare/combine them (the whole dashboard then shows their
+  combined totals). Availability %, Performance %, output, and downtime are
+  always real at this granularity. Quality % and OEE % are real for
+  Production Dept lines too (each product row tracks its own good/total
+  output), but show as "Not tracked per machine" for Packing Dept, since
+  those workbooks only record good-unit counts at the whole-shift level
+  (see `MachineDayRecord` in `models.py`).
+
 ## Run the tests
 
 ```bash
@@ -167,6 +194,19 @@ sheet, at parse time:
   doesn't reproduce from summed counters; OEE is then derived from the
   day-level Availability/Performance/Quality so the three keep multiplying
   out to the fourth, same as they do per-shift.
+- **Per-machine/line grouping** merges spelling variants of the same line
+  (e.g. Nimco's "R20 L" and "R20L", entered inconsistently by whoever filled
+  in a given row) into one group by a whitespace-normalized key, and drops
+  any group with fewer than 10 recorded days as noise (a one-off typo'd
+  entry, not a real recurring line). The plant-wide shift schedule
+  (available run time) is shared across every row on a shift, so it's
+  attributed once per shift rather than summed once per row -- otherwise a
+  line spread across, say, 13 machine-asset rows would show a "day" 13x
+  longer than the shift actually was. Packing Dept and Production Dept use
+  entirely different per-row column layouts for this (down to which fields
+  are even tracked per row at all -- see PRODUCTION_ROW_HEADERS vs.
+  MACHINE_ROW_HEADERS in `parser.py`), so both are tried per sheet and
+  whichever one matches is used.
 - **Data-quality warnings** (e.g. an isolated date far from its neighbors,
   which caught a real year-typo in the Nimco file, and real early-reporting
   gaps in Coated Peanut/Namak Para) are surfaced in the `build_cache.py`
