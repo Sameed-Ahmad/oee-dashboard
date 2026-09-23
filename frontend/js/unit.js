@@ -9,7 +9,7 @@ const Unit = (() => {
     const overview = await Api.getUnitOverview(unitSlug);
     renderHeader(overview);
     renderCards(overview);
-    renderRankedChart(overview);
+    renderMonthlyTrendChart(overview);
   }
 
   function renderHeader(overview) {
@@ -55,12 +55,23 @@ const Unit = (() => {
       });
   }
 
-  function renderRankedChart(overview) {
-    const departments = overview.departments.map((d) => ({
-      displayName: d.displayName,
-      avgOeePct: d.summary.avgOeePct,
-    }));
-    Charts.renderRankedOeeChart("rankedDeptOeeChart", departments);
+  // Builds the shared-label-axis series shape renderDepartmentTrendChart
+  // needs from each department's own sparse point list -- a department
+  // missing a given month/year (e.g. it started later) gets a null there
+  // rather than a fabricated value, so the line shows a genuine gap.
+  function alignedSeries(departments, pointsKey) {
+    const labels = Array.from(new Set(departments.flatMap((d) => d[pointsKey].map((p) => p.label)))).sort();
+    const series = departments.map((d) => {
+      const byLabel = {};
+      d[pointsKey].forEach((p) => { byLabel[p.label] = p.avgOeePct; });
+      return { label: d.displayName, data: labels.map((l) => (l in byLabel ? byLabel[l] : null)) };
+    });
+    return { labels, series };
+  }
+
+  function renderMonthlyTrendChart(overview) {
+    const { labels, series } = alignedSeries(overview.departments, "monthlyOee");
+    Charts.renderDepartmentTrendChart("monthlyDeptChart", labels.map(Calendar.monthNameOnly), series);
   }
 
   return { show };

@@ -149,6 +149,56 @@ def _num(value, default=0):
     return default
 
 
+def corrected_day_availability(ws) -> tuple[int, int, float] | None:
+    """Recomputes the WHOLE DAY's available time, actual run time, and
+    Availability % so that "planned shut down" minutes (a genuinely
+    scheduled non-production interval, e.g. a break) are excluded from the
+    baseline BEFORE measuring how much of the remaining time was lost to
+    unplanned downtime (breakdowns, changeovers, ...). Applies to BOTH
+    departments -- verified present in Packing Dept's per-row table
+    (Fry-O/Pops/Ishida/Nimco) as well as Production Dept's.
+
+    The workbook's own reported figures don't do this: verified against
+    real cells, "Run Time in minutes" = "Planned run Time in minutes" -
+    (downtime categories), with "planned shut down in minutes" tracked in
+    its own column but never subtracted anywhere, and the whole-day summary
+    anchor block's own "Time"/"Availability %" cells are separately-computed
+    figures that don't reconcile with the visible downtime causes either
+    (verified on Production Dept: the anchor's act_time is just a copy of
+    the day's total "Planned run Time", not net of downtime at all). This
+    instead computes, from the per-row table's own Total row (already
+    correctly summed across every product/machine that ran that day):
+
+        available_after_shutdown = total planned run time - total planned shutdown
+        run_time                 = available_after_shutdown - total downtime losses
+        availability_pct         = run_time / available_after_shutdown * 100
+
+    Returns None if this sheet doesn't have a per-row table with these
+    columns at all -- callers should leave the sheet's own reported values
+    untouched in that case (e.g. a sheet parse_shift_sheet still handles
+    generically but with no per-row breakdown, if such a sheet exists).
+    """
+    header_row, dt_cols = find_downtime_range(ws)
+    total_row = find_total_row(ws)
+    if header_row is None or total_row is None:
+        return None
+
+    planned_run_col = find_exact_header_column(ws, header_row, PLANNED_RUN_TIME_HEADER)
+    planned_shutdown_col = find_exact_header_column(ws, header_row, PLANNED_SHUTDOWN_HEADER)
+    if planned_run_col is None or planned_shutdown_col is None:
+        return None
+
+    planned_run_time = _num(ws.cell(row=total_row, column=planned_run_col).value)
+    planned_shutdown = _num(ws.cell(row=total_row, column=planned_shutdown_col).value)
+    available_after_shutdown = max(0, planned_run_time - planned_shutdown)
+
+    downtime_sum = sum(_num(ws.cell(row=total_row, column=c).value) for c in dt_cols)
+    run_time = max(0, available_after_shutdown - downtime_sum)
+
+    availability_pct = (run_time / available_after_shutdown * 100) if available_after_shutdown else 0.0
+    return int(round(available_after_shutdown)), int(round(run_time)), availability_pct
+
+
 def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
     """Parses ONE shift-sheet into a raw shift record. Positional, not label-
     text-based, since Production Dept's summary-block labels are sometimes
@@ -201,10 +251,33 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
     except (TypeError, ValueError) as exc:
         return None, f"could not coerce values in sheet '{sheet_name}': {exc}"
 
+    # Override the anchor block's own availTime/actTime/availabilityPct
+    # (which don't account for planned shutdown -- see
+    # corrected_day_availability) with the corrected figures, and re-derive
+    # OEE % to match. Returns None (leaving the sheet's own reported values
+    # untouched) only if this sheet has no per-row table with these columns
+    # at all.
+    corrected = corrected_day_availability(ws)
+    if corrected is not None:
+        avail_time_corrected, act_time_corrected, availability_pct_corrected = corrected
+        record["availTime"] = avail_time_corrected
+        record["actTime"] = act_time_corrected
+        record["availabilityPct"] = round(availability_pct_corrected, 2)
+        record["oeePct"] = round(
+            availability_pct_corrected * record["performancePct"] * record["qualityPct"] / 10000, 2
+        )
+
     return record, None
 
 
 GROUP_HEADER_KEYWORDS = ("product", "machine", "sku")
+
+# Exact header text for the two columns used to correct Availability % (see
+# corrected_day_availability) -- pulled out as constants since they're read
+# both at the whole-day level (Total row) and per-row level, in both
+# departments' layouts.
+PLANNED_RUN_TIME_HEADER = "planed run time in minutes"  # sic -- real header typo
+PLANNED_SHUTDOWN_HEADER = "planned shut down in minutes"
 
 # Per-machine-row metric columns, located by exact header text (verified
 # identical across Fry-O/Pops/Ishida/Nimco). Unlike the downtime columns,
@@ -214,12 +287,12 @@ GROUP_HEADER_KEYWORDS = ("product", "machine", "sku")
 # that a loose substring match would wrongly pick up instead.
 MACHINE_ROW_HEADERS = {
     "speed": "speed",
-    "run_time": "run time in minutes",
-    "availability_pct": "availability percentage",
     "actual_count": "actual total count",
     "performance_pct": "performance percentage",
     "target_counter": "target counter",
     "stock_transferred": "good conter transfer to warehouse",
+    "planned_run_time": PLANNED_RUN_TIME_HEADER,
+    "planned_shutdown": PLANNED_SHUTDOWN_HEADER,
 }
 
 # Production Dept's per-product-row table uses a completely different column
@@ -232,12 +305,12 @@ MACHINE_ROW_HEADERS = {
 # Quality %/OEE % are real at this granularity, not forced to "not tracked".
 PRODUCTION_ROW_HEADERS = {
     "speed": "standard output",
-    "run_time": "run time in minutes",
-    "availability_pct": "availability percentage",
     "actual_count": "output with wastage",
     "performance_pct": "performance percentage",
     "target_counter": "target output with wastage",
     "stock_transferred": "actual ouput without wastage",  # sic -- real header typo
+    "planned_run_time": PLANNED_RUN_TIME_HEADER,
+    "planned_shutdown": PLANNED_SHUTDOWN_HEADER,
 }
 
 
@@ -329,11 +402,17 @@ def parse_machine_group_records(
     row's own speed x the shared window), since ideal output CAPACITY really
     does sum across parallel rows.
 
-    `act_time` (the shared param) is only used for Packing Dept, where every
-    machine runs for the same shared shift duration; Production Dept's rows
-    each have their own real, independently-additive run time (a product
-    occupies its own slice of the shift, not the whole thing), read directly
-    per row instead.
+Every row's own `run_time`/Availability % is computed as (Planned run Time
+    - planned shutdown) - downtime -- same correction as
+    corrected_day_availability, applied at row granularity, rather than
+    read directly from the sheet's own (uncorrected) "Run Time in minutes"/
+    "Availability Percentage" columns. This is used directly for Production
+    Dept's stored actTime (each product genuinely occupies its own,
+    independently-additive slice of the shift). Packing Dept's stored
+    actTime instead uses `act_time` (the shared param -- every machine runs
+    for the same shared shift duration, so it's deduped the same way
+    `availTime` is above) -- `run_time` there is only used to flag whether
+    THIS row ran at all (actMachines) and to detect genuinely blank rows.
 
     A row that's entirely zero (no run time, no output, no downtime) is
     dropped rather than kept as a zero-value day -- Production Dept's sheets
@@ -367,15 +446,6 @@ def parse_machine_group_records(
         raw_label = str(group_val).strip()
         key = normalize_group_key(raw_label)
 
-        # Clamped at 0 and rounded to a whole minute: a few real Production
-        # Dept rows compute a NEGATIVE "Run Time in minutes" (a changeover
-        # was logged but the product never actually ran that shift, and the
-        # sheet's own formula subtracts changeover time from a planned time
-        # of 0) -- real downtime, but a negative run time isn't a
-        # meaningful quantity to carry into a displayed total. Some rows
-        # also carry a fractional value (e.g. 6.3) from the sheet's own
-        # proration formula -- actTime is stored as whole minutes.
-        run_time = int(round(max(0, _num(ws.cell(row=r, column=cols["run_time"]).value))))
         speed = float(_num(ws.cell(row=r, column=cols["speed"]).value))
         actual_count = int(_num(ws.cell(row=r, column=cols["actual_count"]).value))
 
@@ -383,6 +453,23 @@ def parse_machine_group_records(
             (ws.cell(row=header_row, column=c).value or f"Category {c}"): float(_num(ws.cell(row=r, column=c).value))
             for c in dt_cols
         }
+
+        # Same correction as corrected_day_availability, applied per row
+        # instead of at the whole-sheet Total row -- planned shutdown is
+        # excluded from the baseline before measuring downtime against it,
+        # rather than trusting the sheet's own (uncorrected) "Run Time in
+        # minutes"/"Availability Percentage" columns. Applies to both header
+        # layouts alike (both have "Planed run Time"/"planned shut down").
+        # Clamped at 0: a few real rows compute a negative figure (e.g. a
+        # changeover logged against a product that was never scheduled that
+        # shift) -- not a meaningful quantity to carry into a displayed total.
+        planned_run_time_row = _num(ws.cell(row=r, column=cols["planned_run_time"]).value)
+        planned_shutdown_row = _num(ws.cell(row=r, column=cols["planned_shutdown"]).value)
+        available_after_shutdown_row = max(0, planned_run_time_row - planned_shutdown_row)
+        run_time = int(round(max(0, available_after_shutdown_row - sum(downtime.values()))))
+        availability_pct_row = (
+            round(run_time / available_after_shutdown_row * 100, 2) if available_after_shutdown_row else 0.0
+        )
 
         if run_time == 0 and actual_count == 0 and not any(downtime.values()):
             continue  # listed but never run this shift -- not real data
@@ -411,7 +498,7 @@ def parse_machine_group_records(
             "actTime": stored_act_time,
             "idealTargetOutput": speed * avail_time,
             "actualTargetOutput": speed * capacity_act_time,
-            "availabilityPct": float(_num(ws.cell(row=r, column=cols["availability_pct"]).value)),
+            "availabilityPct": round(availability_pct_row, 2),
             "targetCounter": int(_num(ws.cell(row=r, column=cols["target_counter"]).value)),
             "actualCounter": actual_count,
             "performancePct": float(_num(ws.cell(row=r, column=cols["performance_pct"]).value)),
@@ -429,9 +516,17 @@ def is_blank_record(rec: dict) -> bool:
     leftover empty template copy or an inactive parallel production line
     (Coated Peanut reports multiple lines as separate same-date sheets, not
     all of which ran every day). Either way, exclude it from that date's
-    aggregation rather than counting it as a zero-output shift."""
-    return (rec["availTime"] == 0 and rec["actTime"] == 0 and
-            rec["idealTargetOutput"] == 0 and rec["actualCounter"] == 0)
+    aggregation rather than counting it as a zero-output shift.
+
+    Judged purely by OUTPUT (idealTargetOutput/actualCounter), not
+    availTime/actTime: verified against real cells, an inactive parallel
+    line can still carry a nonzero "Planned run Time"/"planned shut down"
+    in its per-product table (apparently entered as a schedule regardless
+    of whether the line actually ran) even though it produced genuinely
+    nothing -- corrected_day_availability picks that up as a real time
+    figure, so time alone is no longer a reliable "nothing happened" signal
+    the way it was before that correction existed."""
+    return rec["idealTargetOutput"] == 0 and rec["actualCounter"] == 0
 
 
 def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:

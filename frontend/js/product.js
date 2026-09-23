@@ -223,22 +223,44 @@ const Product = (() => {
     state.machines.forEach((m) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.textContent = m;
-      btn.className = state.selectedMachines.includes(m) ? "active" : "";
-      btn.addEventListener("click", () => {
+      btn.className = "machine-option" + (state.selectedMachines.includes(m) ? " active" : "");
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = state.selectedMachines.includes(m);
+      checkbox.title = "Add to comparison";
+      // Toggling the checkbox builds a multi-machine comparison (additive)
+      // without affecting the rest of the selection -- stopPropagation
+      // keeps this click from also reaching the button's own "switch to
+      // just this one" handler below.
+      checkbox.addEventListener("click", (e) => e.stopPropagation());
+      checkbox.addEventListener("change", () => {
         const idx = state.selectedMachines.indexOf(m);
         const next = idx === -1
           ? state.selectedMachines.concat(m)
           : state.selectedMachines.filter((x) => x !== m);
         setSelectedMachines(next);
       });
+      btn.appendChild(checkbox);
+
+      const label = document.createElement("span");
+      label.textContent = m;
+      btn.appendChild(label);
+
+      // Clicking the machine's name/body switches exclusively to just this
+      // one -- the common case of "show me this line instead," not another
+      // add-to-comparison click. Comparing several is opt-in via the checkbox.
+      btn.addEventListener("click", () => {
+        if (state.selectedMachines.length === 1 && state.selectedMachines[0] === m) return;
+        setSelectedMachines([m]);
+      });
       seg.appendChild(btn);
     });
 
     const hint = el("machineSelectorHint");
     hint.textContent = state.selectedMachines.length > 1
-      ? `Comparing ${state.selectedMachines.length} lines (combined totals) — click a highlighted one to remove it.`
-      : "Click one to drill in, or click several to compare/combine them.";
+      ? `Comparing ${state.selectedMachines.length} lines (combined totals) — uncheck a box to remove one, or click a name to switch to just it.`
+      : "Click a name to switch to it, or check boxes to compare/combine several.";
   }
 
   // ---------- Header / tabs ----------
@@ -409,7 +431,7 @@ const Product = (() => {
 
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), rangeLabel);
-    addKpiTile("Avg. machines used", summary.avgActMachines.toFixed(1), `of ${summary.avgAvailMachines.toFixed(1)} available on average`);
+    addKpiTile("Machines available", summary.avgAvailMachines.toFixed(1), "average across measured days");
     addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
     addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
 
@@ -446,7 +468,7 @@ const Product = (() => {
 
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), `${rangeStart} – ${rangeEnd}`);
-    addKpiTile("Avg. machines used", summary.avgActMachines.toFixed(1), `of ${summary.avgAvailMachines.toFixed(1)} available on average`);
+    addKpiTile("Machines available", summary.avgAvailMachines.toFixed(1), "average across measured days");
     addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
     addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
 

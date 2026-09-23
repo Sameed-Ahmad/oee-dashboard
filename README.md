@@ -66,6 +66,26 @@ Production Dept); click a department card to see its product comparison,
 then a product card (or the tab bar once inside a product's dashboard) to
 drill into its full OEE view.
 
+**The whole app shows the current year's data only** (older years are
+considered stale, per explicit request) — every calendar, chart, KPI, and
+machine/line list across every page, computed dynamically off today's date
+rather than a hardcoded year, so it keeps advancing on its own each January
+rather than needing a code change. This is enforced centrally in
+`_get_records`/`_get_groups` (`routes.py`), which every endpoint goes
+through -- the on-disk cache and parser still hold full history untouched,
+so relaxing or removing the filter later needs no reparse, just a code
+change in those two functions.
+
+The unit page has a **monthly OEE trend** chart below the department cards
+(not an all-time average — that's already on the cards above it): one line
+per department, x-axis labeled by month name, each department its own
+fixed color so they stay distinguishable, plus a dashed 85% world-class
+benchmark reference line (`Charts.renderDepartmentTrendChart`). Separately,
+every ranked-OEE BAR chart in the app (department/product rankings) colors
+bars green at/above that same 85% benchmark and red below it
+(`Charts.benchmarkColorVar`) — a plain 2-tier signal, distinct from the
+hero tier tag's own 3-tier good/ok/bad wording elsewhere.
+
 On a department page, check the **"Compare"** box on 2 or more product
 cards (e.g. HNC 1 and HNC 3) to open a side-by-side comparison: KPI cards,
 a grouped Availability/Performance/Quality/OEE bar chart, a weekly-average
@@ -84,14 +104,16 @@ top) supports three ways to scope the view:
   it — Packing Dept's named machines/SKU codes (Ishida, Nimco, ...) and
   Production Dept's individual products (HNC 1's Masoor/Peanut/Sev/...,
   Kuiper's FryO variants, ...) alike — a "Machine / line" tab bar appears
-  above the hero section. Click one to drill into it alone, or click
-  several to compare/combine them (the whole dashboard then shows their
-  combined totals). Availability %, Performance %, output, and downtime are
-  always real at this granularity. Quality % and OEE % are real for
-  Production Dept lines too (each product row tracks its own good/total
-  output), but show as "Not tracked per machine" for Packing Dept, since
-  those workbooks only record good-unit counts at the whole-shift level
-  (see `MachineDayRecord` in `models.py`).
+  above the hero section. Clicking a name switches exclusively to it (the
+  common case: "show me this line instead"); checking its box instead adds
+  it to a multi-line comparison without disturbing the rest of the
+  selection, and the whole dashboard then shows the combined totals of
+  whichever lines are checked. Availability %, Performance %, output, and
+  downtime are always real at this granularity. Quality % and OEE % are
+  real for Production Dept lines too (each product row tracks its own
+  good/total output), but show as "Not tracked per machine" for Packing
+  Dept, since those workbooks only record good-unit counts at the
+  whole-shift level (see `MachineDayRecord` in `models.py`).
 
 ## Run the tests
 
@@ -183,6 +205,18 @@ sheet, at parse time:
   aggregation. A *clean* sheet that's all zero is kept -- it's the sole
   record for its date+shift, so an honest zero (e.g. a Night shift that
   never ran) is real, reportable data, not junk to hide.
+- **Availability %** is corrected to exclude *planned* shutdown (a
+  genuinely scheduled non-production interval, e.g. a break) from the
+  baseline before measuring unplanned downtime (breakdowns, changeovers,
+  ...) against it -- both departments' per-row tables track "Planned run
+  Time" and "planned shut down" as separate columns, but the workbooks'
+  own "Run Time"/"Availability %" formulas never actually subtract the
+  latter. `corrected_day_availability` in `parser.py` recomputes, from the
+  per-row table's Total row: `available = planned run time - planned
+  shutdown`, `run time = available - downtime`, `availability % = run
+  time / available x 100` -- applied at both the whole-day level and the
+  per-machine/line level, so "Run time" now reconciles exactly with the
+  downtime Pareto chart shown alongside it.
 - **Aggregating multiple shifts into a day** isn't just averaging
   percentages: additive fields (time, output, downtime, labor) are summed;
   Quality % and Output/Labor are recomputed from those sums (exact, since

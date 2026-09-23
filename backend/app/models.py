@@ -179,11 +179,17 @@ class DepartmentAvgSummary(BaseModel):
     avgOeePct: float
 
 
+class OeeTrendPoint(BaseModel):
+    label: str  # "2026-01" for a monthly point
+    avgOeePct: float
+
+
 class UnitOverviewDepartmentEntry(BaseModel):
     slug: str
     displayName: str
     productCount: int
     summary: DepartmentAvgSummary
+    monthlyOee: list[OeeTrendPoint]  # one point per month with data, current year only
 
 
 class UnitDetail(BaseModel):

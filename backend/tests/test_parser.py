@@ -165,10 +165,16 @@ def test_ishida_single_shift_spot_check(ishida_parsed):
     shift = next(s for s in day["shifts"] if s["sheet"] == "01-10-25D")
     assert shift["availMachines"] == 3
     assert shift["actMachines"] == 2
-    assert shift["availabilityPct"] == pytest.approx(30.83, abs=0.01)
+    # Availability %/OEE % are corrected to exclude planned shutdown from
+    # the baseline before measuring downtime against it (see
+    # corrected_day_availability) -- NOT the workbook's own raw Availability
+    # % (30.83), which never subtracts planned shutdown at all. Verified
+    # this column is present in Packing Dept's per-row table too, not just
+    # Production Dept's.
+    assert shift["availabilityPct"] == pytest.approx(26.22, abs=0.01)
     assert shift["performancePct"] == pytest.approx(99.45, abs=0.01)
     assert shift["qualityPct"] == pytest.approx(97.29, abs=0.01)
-    assert shift["oeePct"] == pytest.approx(29.83, abs=0.01)
+    assert shift["oeePct"] == pytest.approx(25.37, abs=0.01)
     assert shift["actualCounter"] == 14160
     assert shift["totalLabor"] == 21
 
@@ -204,10 +210,12 @@ def test_fryo_spot_check(fryo_parsed):
     record = next(r for r in fryo_parsed.records if r["date"] == "2026-08-06")
     assert record["availMachines"] == 18
     assert record["actMachines"] == 15
-    assert record["availabilityPct"] == pytest.approx(81.25, abs=0.01)
+    # Corrected to exclude planned shutdown from the baseline (see
+    # corrected_day_availability) -- not the workbook's own raw 81.25%.
+    assert record["availabilityPct"] == pytest.approx(73.96, abs=0.01)
     assert record["performancePct"] == pytest.approx(96.09, abs=0.01)
     assert record["qualityPct"] == 100
-    assert record["oeePct"] == pytest.approx(78.07, abs=0.01)
+    assert record["oeePct"] == pytest.approx(71.07, abs=0.01)
     assert record["actualCounter"] == 232272
 
 
@@ -232,10 +240,15 @@ def test_hnc1_spot_check(hnc1_parsed):
     record = next(r for r in hnc1_parsed.records if r["date"] == "2026-01-01")
     assert record["availMachines"] == 1
     assert record["actMachines"] == 1
-    assert record["availabilityPct"] == pytest.approx(69.93, abs=0.01)
+    # Availability %/actTime/OEE % are corrected to exclude planned shutdown
+    # from the baseline before measuring downtime against it (see
+    # corrected_day_availability) -- NOT the workbook's own raw Availability
+    # % (69.93), which never subtracts planned shutdown at all.
+    assert record["actTime"] == 645
+    assert record["availabilityPct"] == pytest.approx(65.15, abs=0.01)
     assert record["performancePct"] == pytest.approx(96.24, abs=0.01)
     assert record["qualityPct"] == pytest.approx(99.70, abs=0.01)
-    assert record["oeePct"] == pytest.approx(67.10, abs=0.01)
+    assert record["oeePct"] == pytest.approx(62.51, abs=0.01)
     assert record["actualCounter"] == 4373
     assert record["totalLabor"] == 9
 

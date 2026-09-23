@@ -2,6 +2,7 @@
 re-parsing the workbook on a normal request (see POST /refresh for that)."""
 from __future__ import annotations
 
+import datetime
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +16,7 @@ from ..models import (
     DepartmentOrgInfo,
     DepartmentOverview,
     DepartmentProductEntry,
+    OeeTrendPoint,
     ProductInfo,
     ProductMachines,
     ProductOrgInfo,
@@ -76,18 +78,35 @@ def _load(slug: str) -> tuple[list[dict], list[str], dict[str, list[dict]]]:
     return records, warnings, groups
 
 
+def _current_year() -> str:
+    """The dashboard shows the current year only, everywhere -- older years
+    are considered stale (explicit request). Computed dynamically rather
+    than hardcoded, so it keeps advancing on its own instead of needing a
+    yearly code change. Applied here, in _get_records/_get_groups, rather
+    than by discarding anything: the on-disk cache and _load's raw values
+    still hold full history, so relaxing this later needs no reparse."""
+    return str(datetime.date.today().year)
+
+
 def _get_records(slug: str) -> list[dict]:
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     records, _, _ = _load(slug)
-    return records
+    year = _current_year()
+    return [r for r in records if r["date"].startswith(year)]
 
 
 def _get_groups(slug: str) -> dict[str, list[dict]]:
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     _, _, groups = _load(slug)
-    return groups
+    year = _current_year()
+    filtered = {}
+    for label, records in groups.items():
+        kept = [r for r in records if r["date"].startswith(year)]
+        if kept:  # a group with nothing left this year isn't worth listing
+            filtered[label] = kept
+    return filtered
 
 
 def product_has_data(slug: str) -> bool:
@@ -179,7 +198,14 @@ def refresh_product(slug: str):
     _records_by_slug[slug] = result.records
     _warnings_by_slug[slug] = result.errors
     _groups_by_slug[slug] = groups
-    return compute_summary(config, result.records, result.errors)
+
+    # Current-year-only, consistent with every other endpoint (_get_records)
+    # -- distinct from the check above, which only guards against a genuine
+    # parse failure (zero records at all, any year).
+    records = _get_records(slug)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"no current-year records for '{slug}' after refresh")
+    return compute_summary(config, records, result.errors)
 
 
 @router.get("/company", response_model=CompanyOrgInfo)
@@ -227,6 +253,57 @@ def get_department_overview(dept_slug: str):
     return DepartmentOverview(department=dept_detail, products=entries)
 
 
+def _avg_department_summary(summaries: list[ProductSummary]) -> DepartmentAvgSummary:
+    n = len(summaries)
+    return DepartmentAvgSummary(
+        avgAvailabilityPct=round(sum(s.avgAvailabilityPct for s in summaries) / n, 2),
+        avgPerformancePct=round(sum(s.avgPerformancePct for s in summaries) / n, 2),
+        avgQualityPct=round(sum(s.avgQualityPct for s in summaries) / n, 2),
+        avgOeePct=round(sum(s.avgOeePct for s in summaries) / n, 2),
+    )
+
+
+def _department_summaries(dept_slug: str) -> list[ProductSummary]:
+    """One ProductSummary per product in this department that has data
+    (already current-year-only, via _get_records)."""
+    summaries = []
+    for p in products_in_department(dept_slug):
+        if not product_has_data(p.slug):
+            continue
+        records = _get_records(p.slug)
+        if not records:
+            continue
+        _, warnings, _ = _load(p.slug)
+        summaries.append(compute_summary(p, records, warnings))
+    return summaries
+
+
+def _department_oee_trend(dept_slug: str, bucket_key) -> list[OeeTrendPoint]:
+    """One point per bucket (as returned by bucket_key(date_iso), e.g.
+    "2026-01" for a month or "2026" for a year) -- current-year-only,
+    already enforced by _get_records. Each point's value is this
+    department's avg-of-each-product's-own-average OEE % for that bucket
+    (same avg-of-averages methodology as _avg_department_summary, just
+    computed per bucket instead of over the whole range at once)."""
+    by_bucket: dict[str, list[float]] = {}
+    for p in products_in_department(dept_slug):
+        if not product_has_data(p.slug):
+            continue
+        records = _get_records(p.slug)
+        if not records:
+            continue
+        product_by_bucket: dict[str, list[float]] = {}
+        for r in records:
+            product_by_bucket.setdefault(bucket_key(r["date"]), []).append(r["oeePct"])
+        for bucket, oee_values in product_by_bucket.items():
+            by_bucket.setdefault(bucket, []).append(sum(oee_values) / len(oee_values))
+
+    return [
+        OeeTrendPoint(label=bucket, avgOeePct=round(sum(values) / len(values), 2))
+        for bucket, values in sorted(by_bucket.items())
+    ]
+
+
 @router.get("/units/{unit_slug}/overview", response_model=UnitOverview)
 def get_unit_overview(unit_slug: str):
     unit = get_unit(unit_slug)
@@ -236,29 +313,16 @@ def get_unit_overview(unit_slug: str):
 
     dept_entries = []
     for dept in departments_in_unit(unit_slug):
-        summaries = []
-        for p in products_in_department(dept.slug):
-            if not product_has_data(p.slug):
-                continue
-            records = _get_records(p.slug)
-            _, warnings, _ = _load(p.slug)
-            summaries.append(compute_summary(p, records, warnings))
-
+        summaries = _department_summaries(dept.slug)
         if not summaries:
             continue  # department has no data yet -- omit rather than show a meaningless zero average
 
-        n = len(summaries)
-        avg_summary = DepartmentAvgSummary(
-            avgAvailabilityPct=round(sum(s.avgAvailabilityPct for s in summaries) / n, 2),
-            avgPerformancePct=round(sum(s.avgPerformancePct for s in summaries) / n, 2),
-            avgQualityPct=round(sum(s.avgQualityPct for s in summaries) / n, 2),
-            avgOeePct=round(sum(s.avgOeePct for s in summaries) / n, 2),
-        )
         dept_entries.append(UnitOverviewDepartmentEntry(
             slug=dept.slug,
             displayName=dept.display_name,
-            productCount=n,
-            summary=avg_summary,
+            productCount=len(summaries),
+            summary=_avg_department_summary(summaries),
+            monthlyOee=_department_oee_trend(dept.slug, lambda d: d[:7]),
         ))
 
     return UnitOverview(

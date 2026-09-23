@@ -40,10 +40,15 @@ const Charts = (() => {
       .sort((a, b) => b[1] - a[1]);
   }
 
-  function tierColorVar(oeePct) {
-    if (oeePct >= 90) return "--good";
-    if (oeePct >= 80) return "--ok";
-    return "--bad";
+  // The world-class OEE benchmark used across the app (see the trend
+  // chart's own 85% reference line) -- also used to color ranked/comparison
+  // bars: green at or above it, red below. The hero tier tag (e.g. "Needs
+  // attention") uses its own, separate 3-tier good/ok/bad split -- see
+  // Utils.tierFor -- this is just for bars.
+  const OEE_BENCHMARK = 85;
+
+  function benchmarkColorVar(value, benchmark = OEE_BENCHMARK) {
+    return value >= benchmark ? "--good" : "--bad";
   }
 
   // One color per product line in the cross-product trend comparison --
@@ -134,7 +139,7 @@ const Charts = (() => {
         labels: sorted.map((p) => p.displayName),
         datasets: [{
           data: sorted.map((p) => p.avgOeePct),
-          backgroundColor: sorted.map((p) => cssVar(tierColorVar(p.avgOeePct))),
+          backgroundColor: sorted.map((p) => cssVar(benchmarkColorVar(p.avgOeePct))),
           borderWidth: 0,
           maxBarThickness: 40,
         }],
@@ -440,6 +445,59 @@ const Charts = (() => {
     });
   }
 
+  // departments: [{ displayName, ytdOeePct, mtdOeePct }] -- grouped bars (YTD,
+  // MTD) per department, each bar colored individually against the world-
+  // class benchmark rather than one fixed color per series, since the point
+  // here is "is this above/below target," not telling YTD apart from MTD by
+  // hue (the legend/axis labels already do that).
+  // labels: x-axis categories (month names, or years). series: [{ label:
+  // "Packing Dept", data: [oee, oee, ...] }, ...] -- one line per
+  // department, each its own fixed color (so the two departments stay
+  // visually distinguishable across both the monthly and yearly trend
+  // charts), plus a dashed 85% world-class benchmark reference line. A
+  // series with only 1-2 points still needs visible dots -- a bare line
+  // can't draw a segment with that few points.
+  function renderDepartmentTrendChart(canvasId, labels, series) {
+    destroy(canvasId);
+    const pointRadius = labels.length <= 2 ? 4 : 0;
+    const datasets = series.map((s, i) => ({
+      label: s.label,
+      data: s.data,
+      borderColor: cssVar(COMPARISON_PALETTE[i % COMPARISON_PALETTE.length]),
+      backgroundColor: "transparent",
+      pointRadius,
+      borderWidth: 2,
+    }));
+    datasets.push({
+      label: "World-class benchmark (85%)",
+      data: labels.map(() => 85),
+      borderColor: cssVar("--muted"),
+      backgroundColor: "transparent",
+      borderDash: [6, 4],
+      pointRadius: 0,
+      borderWidth: 1,
+    });
+
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${item.parsed.y}% OEE` } },
+        },
+        scales: {
+          x: { ticks: { font: baseFont(), maxRotation: 0 }, grid: { display: false } },
+          y: { min: 0, max: 100, ticks: { font: baseFont(), callback: (v) => v + "%" }, grid: { color: cssVar("--border") } },
+        },
+      },
+    });
+  }
+
   return {
     renderDowntimeChart,
     biggestCauseCallout,
@@ -449,7 +507,7 @@ const Charts = (() => {
     renderRankedOeeChart,
     renderComparisonBarChart,
     renderProductComparisonTrendChart,
-    tierColorVar,
+    renderDepartmentTrendChart,
     weeklyBuckets,
   };
 })();
