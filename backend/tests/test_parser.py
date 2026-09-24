@@ -165,18 +165,47 @@ def test_ishida_single_shift_spot_check(ishida_parsed):
     shift = next(s for s in day["shifts"] if s["sheet"] == "01-10-25D")
     assert shift["availMachines"] == 3
     assert shift["actMachines"] == 2
-    # Availability %/OEE % are corrected to exclude planned shutdown from
-    # the baseline before measuring downtime against it (see
-    # corrected_day_availability) -- NOT the workbook's own raw Availability
-    # % (30.83), which never subtracts planned shutdown at all. Verified
-    # this column is present in Packing Dept's per-row table too, not just
-    # Production Dept's.
-    assert shift["availabilityPct"] == pytest.approx(26.22, abs=0.01)
+    # Packing Dept (Ishida/Fry-O/Pops/Nimco) is NOT run through
+    # corrected_day_availability's shutdown correction, unlike Production
+    # Dept -- verified against real cells, its own "Planned run Time"
+    # ALREADY has "planned shut down" subtracted (it always equals the
+    # summary anchor's "Plant operating time" minus "planned shut down"),
+    # so the sheet's own reported Availability % already excludes it
+    # correctly; these are the workbook's own genuine, uncorrected figures.
+    assert shift["availTime"] == 510
+    assert shift["actTime"] == 480
+    assert shift["availabilityPct"] == pytest.approx(30.83, abs=0.01)
     assert shift["performancePct"] == pytest.approx(99.45, abs=0.01)
     assert shift["qualityPct"] == pytest.approx(97.29, abs=0.01)
-    assert shift["oeePct"] == pytest.approx(25.37, abs=0.01)
+    assert shift["oeePct"] == pytest.approx(29.83, abs=0.01)
     assert shift["actualCounter"] == 14160
     assert shift["totalLabor"] == 21
+
+
+def test_ishida_concurrent_machines_not_corrected(ishida_parsed):
+    """Ishida's 3 named machines run CONCURRENTLY and each independently
+    logs its own downtime against the same wall-clock shift -- summing
+    their downtime naively against ONE shared window (as an earlier,
+    wrong version of corrected_day_availability did, by treating Packing
+    Dept like Production Dept) can exceed that window even when some
+    machines were still producing, clamping actTime to a misleading 0.
+    Real case: 2026-01-01's Day shift logs 1011 minutes of summed downtime
+    across its 3 machines (510/278/223) against a 360-minute window. The
+    fix is to not "correct" Packing Dept at all -- verified its own
+    unmodified Availability % (24.09%) already excludes planned shutdown
+    correctly, and reflects genuine, non-zero production that shift."""
+    day = next(r for r in ishida_parsed.records if r["date"] == "2026-01-01")
+    day_shift = next(s for s in day["shifts"] if s["sheet"] == "01-01-26D")
+    assert day_shift["availTime"] == 360
+    assert day_shift["actTime"] == 330
+    assert day_shift["availabilityPct"] == pytest.approx(24.09, abs=0.01)
+    assert day_shift["actualCounter"] == 6496  # real production happened this shift
+
+    # The combined day (Day + Night) reflects genuine, non-zero production
+    # throughout -- not the misleading "0 min run time" the wrong
+    # whole-sheet-downtime-sum "fix" produced.
+    assert day["actTime"] > 0
+    assert day["actualCounter"] == 27801
 
 
 def test_ishida_all_zero_shift_kept_visible(ishida_parsed):
@@ -210,12 +239,24 @@ def test_fryo_spot_check(fryo_parsed):
     record = next(r for r in fryo_parsed.records if r["date"] == "2026-08-06")
     assert record["availMachines"] == 18
     assert record["actMachines"] == 15
-    # Corrected to exclude planned shutdown from the baseline (see
-    # corrected_day_availability) -- not the workbook's own raw 81.25%.
-    assert record["availabilityPct"] == pytest.approx(73.96, abs=0.01)
+    # Fry-O (Packing Dept) is NOT run through corrected_day_availability's
+    # shutdown correction, unlike Production Dept -- verified against real
+    # cells, its own "Planned run Time" ALREADY has "planned shut down"
+    # subtracted (it always equals the summary anchor's "Plant operating
+    # time" minus "planned shut down", repeated across ~20 machine-asset
+    # rows for its one product), so the sheet's own reported Availability %
+    # already excludes it correctly; these are the workbook's own genuine,
+    # uncorrected figures. (An earlier, wrong version of this correction
+    # treated Fry-O like Production Dept and naively summed the Total row's
+    # "Planned run Time" across every machine-asset row, multiplying that
+    # one shared ~520-minute schedule up to a nonsensical 8038 minutes --
+    # see corrected_day_availability for why Packing Dept is excluded.)
+    assert record["availTime"] == 620
+    assert record["actTime"] == 570
+    assert record["availabilityPct"] == pytest.approx(81.25, abs=0.01)
     assert record["performancePct"] == pytest.approx(96.09, abs=0.01)
     assert record["qualityPct"] == 100
-    assert record["oeePct"] == pytest.approx(71.07, abs=0.01)
+    assert record["oeePct"] == pytest.approx(78.07, abs=0.01)
     assert record["actualCounter"] == 232272
 
 
@@ -240,10 +281,10 @@ def test_hnc1_spot_check(hnc1_parsed):
     record = next(r for r in hnc1_parsed.records if r["date"] == "2026-01-01")
     assert record["availMachines"] == 1
     assert record["actMachines"] == 1
-    # Availability %/actTime/OEE % are corrected to exclude planned shutdown
-    # from the baseline before measuring downtime against it (see
-    # corrected_day_availability) -- NOT the workbook's own raw Availability
-    # % (69.93), which never subtracts planned shutdown at all.
+    # HNC 1 (Production Dept) genuinely needs corrected_day_availability:
+    # its own "Planned run Time" does NOT have "planned shut down"
+    # subtracted (unlike Packing Dept's), so its own raw Availability %
+    # (69.93) never excludes it -- not the workbook's own raw figure.
     assert record["actTime"] == 645
     assert record["availabilityPct"] == pytest.approx(65.15, abs=0.01)
     assert record["performancePct"] == pytest.approx(96.24, abs=0.01)
@@ -251,6 +292,61 @@ def test_hnc1_spot_check(hnc1_parsed):
     assert record["oeePct"] == pytest.approx(62.51, abs=0.01)
     assert record["actualCounter"] == 4373
     assert record["totalLabor"] == 9
+
+
+def test_hnc1_duplicate_date_format_sheets_deduped(hnc1_parsed):
+    """The real workbook has both "10-02-26" and "10-02-2026" -- neither
+    numbered/suffixed, so should_skip_sheet's "(NN)" dedup never catches
+    them -- both resolve to the same real-world date+shift (2026-02-10,
+    "SINGLE") under inconsistent year-digit naming. Only one must survive;
+    otherwise that date's totals get silently doubled."""
+    record = next(r for r in hnc1_parsed.records if r["date"] == "2026-02-10")
+    assert record["shiftCount"] == 1
+    assert record["sheets"] == ["10-02-26"]
+    assert "10-02-2026" in hnc1_parsed.skipped_sheets
+
+
+def test_hnc1_coincidental_row_match_still_corrected(hnc1_parsed):
+    """2026-02-24 has only 2 real rows (Sev/White Matar), and Sev's own
+    "Planned run Time" (500) happens to coincidentally equal the anchor
+    block's own reported time (500) -- an earlier, wrong version of the
+    Packing-vs-Production classifier took a majority vote across real
+    rows, so this 1-of-2 coincidence flipped the vote and misclassified a
+    genuine Production Dept sheet as Packing Dept, leaving its actual bug
+    uncorrected (the sheet's own raw anchor reports actTime=790 against
+    availTime=500, i.e. more run time than available time -- nonsensical).
+    The fix uses a deterministic, header-text-based signal instead (a
+    "Speed" column only Packing Dept sheets have), immune to how many real
+    rows a given day happens to have."""
+    record = next(r for r in hnc1_parsed.records if r["date"] == "2026-02-24")
+    assert record["availTime"] == 790
+    assert record["actTime"] == 710
+    assert record["actTime"] <= record["availTime"]
+    assert record["availabilityPct"] == pytest.approx(89.87, abs=0.01)
+
+
+@pytest.fixture(scope="module")
+def kuiper_parsed():
+    if not _has_file(KUIPER_CONFIG):
+        pytest.skip("Kuiper workbook not present in backend/data/raw/kuiper/")
+    return parse_workbook(KUIPER_CONFIG)
+
+
+def test_kuiper_repeated_product_row_group_time_additive(kuiper_parsed):
+    """2026-01-01's sheet lists "FryO Sweet & Sour" on two separate rows
+    (s,no 1 and 4) with genuinely different Planned run Time/downtime --
+    two distinct scheduled slots for the same product, not a duplicated
+    constant. Both slots' own availability window must be summed into the
+    group's availTime (previously this field wrongly used the shared,
+    deduped WHOLE-SHEET corrected time instead of each row's own slice,
+    so a second real slot for the same product could push actTime above
+    availTime, e.g. 685 actTime against only 450 availTime)."""
+    recs = kuiper_parsed.groups["FryO Sweet & Sour"]
+    day = next(r for r in recs if r["date"] == "2026-01-01")
+    assert day["shiftCount"] == 2
+    assert day["availTime"] == 960
+    assert day["actTime"] == 685
+    assert day["actTime"] <= day["availTime"]
 
 
 @pytest.fixture(scope="module")

@@ -159,12 +159,13 @@
 
     <section class="trend-section">
       <div class="trend-header">
-        <h2>OEE &middot; Availability &middot; Performance over time</h2>
+        <h2 id="trendHeading">OEE &middot; Availability &middot; Performance over time</h2>
         <div class="trend-toggle" id="trendToggle">
           <button type="button" data-range="recent" class="active">Recent (60 days)</button>
           <button type="button" data-range="full">Full range (weekly avg)</button>
         </div>
       </div>
+      <div class="panel-sub" id="trendPanelSub" style="display:none"></div>
       <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
     </section>
 

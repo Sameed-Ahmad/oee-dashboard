@@ -175,8 +175,13 @@ const Charts = (() => {
 
   function renderDowntimeChart(canvasId, downtimeTotals, limit, compact) {
     destroy(canvasId);
-    let entries = sortedDowntimeEntries(downtimeTotals);
-    if (limit) entries = entries.slice(0, limit);
+    const allEntries = sortedDowntimeEntries(downtimeTotals);
+    // % of lost time is always against the TRUE total across every cause,
+    // not just whichever top-N are shown (compact small-multiples only
+    // plot the top 5) -- same total biggestCauseCallout already uses below
+    // the chart, so the two stay consistent with each other.
+    const totalMinutes = allEntries.reduce((s, [, v]) => s + v, 0);
+    const entries = limit ? allEntries.slice(0, limit) : allEntries;
     const tickFont = compact ? { family: "Inter, -apple-system, sans-serif", size: 10 } : baseFont();
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
@@ -200,7 +205,10 @@ const Charts = (() => {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              label: (item) => `${item.formattedValue} min`,
+              label: (item) => {
+                const pct = totalMinutes > 0 ? ((item.parsed.x / totalMinutes) * 100).toFixed(1) : "0";
+                return `${item.formattedValue} min (${pct}% of lost time)`;
+              },
             },
           },
         },
@@ -445,11 +453,84 @@ const Charts = (() => {
     });
   }
 
-  // departments: [{ displayName, ytdOeePct, mtdOeePct }] -- grouped bars (YTD,
-  // MTD) per department, each bar colored individually against the world-
-  // class benchmark rather than one fixed color per series, since the point
-  // here is "is this above/below target," not telling YTD apart from MTD by
-  // hue (the legend/axis labels already do that).
+  // Output per man-hour over time -- man-hours = headcount x hours actually
+  // worked (actTime, already corrected to exclude planned shutdown and
+  // downtime), so this is genuinely "how much labor productivity moved,"
+  // not a raw output chart. Weekly-bucketed for a long (e.g. Jan-to-date)
+  // range, daily for a short one -- same adaptive threshold as
+  // renderOutputChartOverview. A week with zero recorded labor is left as a
+  // gap (null), not zero, since "no labor tracked" isn't "zero output."
+  // Not a time series -- x is man-hours itself (labor headcount x hours
+  // actually worked, already corrected to exclude planned shutdown and
+  // downtime), so this shows how output responds as man-hours goes up or
+  // down, regardless of which calendar day that was. Individual days are
+  // way too noisy to read as a line, so days are sorted by man-hours and
+  // grouped into ~10 equal-sized buckets (fewer if there isn't much data);
+  // each plotted point is a bucket's own average man-hours/output -- a
+  // smoothed relationship, not a real day's numbers.
+  function renderProductionVsManHoursChart(canvasId, records) {
+    destroy(canvasId);
+    const points = records
+      .map((r) => ({ manHours: r.totalLabor * (r.actTime / 60), output: r.actualCounter }))
+      .filter((p) => p.manHours > 0)
+      .sort((a, b) => a.manHours - b.manHours);
+
+    const numBins = Math.max(1, Math.min(10, Math.floor(points.length / 3)));
+    const binSize = Math.ceil(points.length / numBins) || 1;
+    const bucketed = [];
+    for (let i = 0; i < points.length; i += binSize) {
+      const slice = points.slice(i, i + binSize);
+      bucketed.push({
+        x: slice.reduce((s, p) => s + p.manHours, 0) / slice.length,
+        y: slice.reduce((s, p) => s + p.output, 0) / slice.length,
+      });
+    }
+
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "line",
+      data: {
+        datasets: [{
+          label: "Actual output",
+          data: bucketed,
+          borderColor: cssVar("--maroon"),
+          backgroundColor: "transparent",
+          pointRadius: 3,
+          pointBackgroundColor: cssVar("--maroon"),
+          borderWidth: 2,
+          tension: 0.15,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "nearest", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${Math.round(item.parsed.y).toLocaleString()} units at ~${Math.round(item.parsed.x).toLocaleString()} man-hours`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: "linear",
+            title: { display: true, text: "Man-hours worked", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+          y: {
+            min: 0,
+            title: { display: true, text: "Units produced", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+        },
+      },
+    });
+  }
+
   // labels: x-axis categories (month names, or years). series: [{ label:
   // "Packing Dept", data: [oee, oee, ...] }, ...] -- one line per
   // department, each its own fixed color (so the two departments stay
@@ -504,6 +585,7 @@ const Charts = (() => {
     renderOutputChartDay,
     renderOutputChartOverview,
     renderTrendChart,
+    renderProductionVsManHoursChart,
     renderRankedOeeChart,
     renderComparisonBarChart,
     renderProductComparisonTrendChart,

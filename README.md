@@ -115,6 +115,31 @@ top) supports three ways to scope the view:
   Dept, since those workbooks only record good-unit counts at the
   whole-shift level (see `MachineDayRecord` in `models.py`).
 
+The whole-product Overview page (no machine/line and no date range
+selected) replaces the usual OEE/Availability/Performance-over-TIME trend
+chart with a **Production vs. man-hours** chart -- not a time series at
+all: x is man-hours itself (total labor headcount x hours actually
+worked, where "hours worked" is the corrected actTime, already net of
+planned shutdown and downtime -- see the Availability % note below), y is
+units produced. Individual days are too noisy to read as a line, so the
+current year's days are sorted by man-hours and grouped into ~10
+equal-sized buckets; each plotted point is a bucket's own average
+man-hours/output, showing the underlying relationship -- does more labor
+actually move output, plateau, or not matter much -- rather than day-to-day
+scatter (`Charts.renderProductionVsManHoursChart`). Switching to a date
+range, a specific machine/line, or a single day reverts to the normal
+trend chart, since man-hours aren't tracked per machine and a single day
+has no relationship to plot -- day mode instead has its own **Total
+labor** KPI tile (that day's raw headcount).
+
+The **Machines available** KPI tile shows a single whole number -- the
+peak `availMachines` observed across whatever's in scope, not an average
+(`maxAvailMachines` in `ProductSummary`, mirrored client-side in
+`computeRangeSummary`) -- since a machine count isn't the kind of thing
+that sensibly comes out fractional. Day mode's own **Machines run** tile
+is unrelated and unchanged: it shows that specific day's actual-vs-available
+machines (`actMachines / availMachines`).
+
 ## Run the tests
 
 ```bash
@@ -205,18 +230,43 @@ sheet, at parse time:
   aggregation. A *clean* sheet that's all zero is kept -- it's the sole
   record for its date+shift, so an honest zero (e.g. a Night shift that
   never ran) is real, reportable data, not junk to hide.
-- **Availability %** is corrected to exclude *planned* shutdown (a
-  genuinely scheduled non-production interval, e.g. a break) from the
+- **Availability %** is corrected for **Production Dept only** (HNC 1/HNC
+  3/Coated Peanut/Namak Para/Extruder/Kuiper) to exclude *planned* shutdown
+  (a genuinely scheduled non-production interval, e.g. a break) from the
   baseline before measuring unplanned downtime (breakdowns, changeovers,
-  ...) against it -- both departments' per-row tables track "Planned run
-  Time" and "planned shut down" as separate columns, but the workbooks'
-  own "Run Time"/"Availability %" formulas never actually subtract the
-  latter. `corrected_day_availability` in `parser.py` recomputes, from the
-  per-row table's Total row: `available = planned run time - planned
-  shutdown`, `run time = available - downtime`, `availability % = run
-  time / available x 100` -- applied at both the whole-day level and the
-  per-machine/line level, so "Run time" now reconciles exactly with the
-  downtime Pareto chart shown alongside it.
+  ...) against it. Both departments' per-row tables track "Planned run
+  Time" and "planned shut down" as separate columns, but only Production
+  Dept's own "Run Time"/"Availability %" formulas fail to subtract the
+  latter -- verified against real cells, Packing Dept's (Fry-O/Pops/
+  Ishida/Nimco) "Planned run Time" already HAS shutdown subtracted (it
+  always equals the summary anchor's own "Plant operating time" minus
+  "planned shut down"), so its own reported figures are already correct
+  and are left untouched. `corrected_day_availability` in `parser.py`
+  tells the two apart the same deterministic, header-text way the
+  per-machine/line breakdown does (Packing Dept's row table has a "Speed"
+  column Production Dept's never does; Production Dept has "Standard
+  Output" instead) before deciding whether to correct anything, and for
+  Production Dept recomputes, from each row's own baseline: `available =
+  planned run time - planned shutdown`, `run time = available - downtime`,
+  summed back to a whole-day figure -- every row counts, including a
+  product genuinely listed on more than one row for distinct time slots
+  (e.g. Kuiper's "FryO Sweet & Sour" on two different shifts one day) --
+  applied at both the whole-day level and the per-machine/line level. Two
+  earlier versions of this were wrong: one mistakenly "corrected" Packing
+  Dept too, which broke in two different ways -- double-subtracting
+  shutdown (already baked into "Planned run Time"), and naively summing
+  many machine-asset rows' identical shared schedule into an absurd total
+  (Fry-O's own Total row reports 8038 minutes of "planned run time" for a
+  real ~520-minute shift), or, for Ishida's 3 concurrently-running named
+  machines, summing their independent downtime against one shared window
+  and clamping "Run time" to a misleading 0 on a day two of them were
+  still producing. Another used a majority vote across each sheet's real
+  rows (does "Planned run Time" match anchor-minus-shutdown?) to tell the
+  departments apart instead of the header check -- wrong on any sheet with
+  very few real rows that day, where a coincidental match could flip the
+  vote and misclassify a genuine Production Dept sheet as Packing Dept
+  (verified: HNC 1's 2026-02-24, with only 2 real product rows, hit exactly
+  this coincidence and was left uncorrected).
 - **Aggregating multiple shifts into a day** isn't just averaging
   percentages: additive fields (time, output, downtime, labor) are summed;
   Quality % and Output/Labor are recomputed from those sums (exact, since

@@ -151,32 +151,60 @@ def _num(value, default=0):
 
 def corrected_day_availability(ws) -> tuple[int, int, float] | None:
     """Recomputes the WHOLE DAY's available time, actual run time, and
-    Availability % so that "planned shut down" minutes (a genuinely
-    scheduled non-production interval, e.g. a break) are excluded from the
-    baseline BEFORE measuring how much of the remaining time was lost to
-    unplanned downtime (breakdowns, changeovers, ...). Applies to BOTH
-    departments -- verified present in Packing Dept's per-row table
-    (Fry-O/Pops/Ishida/Nimco) as well as Production Dept's.
+    Availability % for PRODUCTION DEPT sheets only (HNC 1/HNC 3/Coated
+    Peanut/Namak Para/Extruder/Kuiper), so that "planned shut down" minutes
+    (a genuinely scheduled non-production interval, e.g. a break) are
+    excluded from the baseline BEFORE measuring how much of the remaining
+    time was lost to unplanned downtime (breakdowns, changeovers, ...).
 
-    The workbook's own reported figures don't do this: verified against
-    real cells, "Run Time in minutes" = "Planned run Time in minutes" -
-    (downtime categories), with "planned shut down in minutes" tracked in
-    its own column but never subtracted anywhere, and the whole-day summary
-    anchor block's own "Time"/"Availability %" cells are separately-computed
-    figures that don't reconcile with the visible downtime causes either
-    (verified on Production Dept: the anchor's act_time is just a copy of
-    the day's total "Planned run Time", not net of downtime at all). This
-    instead computes, from the per-row table's own Total row (already
-    correctly summed across every product/machine that ran that day):
+    Production Dept's rows genuinely split the day's schedule across
+    distinct named products (e.g. HNC 1's Masoor/Peanut/Sev/... each get
+    their own slice, which sum back to the day's real total), and -- this
+    is the actual bug -- their own "Planned run Time" does NOT have
+    "planned shut down" subtracted (verified against real cells: "Total
+    Time in minutes" == "Planned run Time" exactly, ignoring "planned shut
+    down" entirely, so the sheet's own Run Time/Availability % never
+    account for it).
 
-        available_after_shutdown = total planned run time - total planned shutdown
-        run_time                 = available_after_shutdown - total downtime losses
-        availability_pct         = run_time / available_after_shutdown * 100
+    Packing Dept (Fry-O/Pops/Ishida/Nimco) is deliberately EXCLUDED from
+    this correction, despite having the same-looking columns: verified
+    against real cells, their "Planned run Time" already HAS shutdown
+    subtracted (it always equals the summary anchor's own "Plant operating
+    time" minus "planned shut down", identically on every row -- whether
+    that's many machine-asset rows sharing one product [Fry-O: ~20 rows,
+    the same 570/50 pair] or several named machines [Ishida: each active
+    row still carries the one shared value, e.g. 480/30, not a per-machine
+    split]), and their own reported Availability % already exactly matches
+    what recomputing it from scratch produces -- there's nothing to fix.
+    An earlier version of this function "corrected" Packing Dept too,
+    which was wrong twice over: it double-subtracted shutdown (already
+    baked into "Planned run Time"), and separately, naively summing the
+    Total row's own "Planned run Time" multiplies that one shared window by
+    however many rows happen to share it (Fry-O's own Total row reports
+    8038 minutes of "planned run time" for what is really one ~520-minute
+    shift).
+
+    Which layout a sheet has is decided the same deterministic, header-text
+    way parse_machine_group_records already tells the two departments
+    apart: Packing Dept's per-row table has a "Speed" column that
+    Production Dept's never does (it has "Standard Output" instead -- see
+    MACHINE_ROW_HEADERS/PRODUCTION_ROW_HEADERS). An earlier version of this
+    check instead compared each row's own "Planned run Time" against the
+    anchor block's own reported time and took a majority vote -- wrong,
+    because a sheet with very few real rows (e.g. only 1-2 products
+    actually run that day) can hit a coincidental match on that vote and
+    get misclassified as Packing Dept, leaving a genuine Production Dept
+    bug uncorrected (verified: HNC 1's 2026-02-24 sheet, with just 2 real
+    rows, had exactly this coincidence). Production Dept sheets get
+    corrected by summing every row's own (shutdown-adjusted) window --
+    including a product listed on more than one row for genuinely distinct
+    time slots, which must both count -- and weighting each row's own
+    ratio by that window when averaging Availability %.
 
     Returns None if this sheet doesn't have a per-row table with these
-    columns at all -- callers should leave the sheet's own reported values
-    untouched in that case (e.g. a sheet parse_shift_sheet still handles
-    generically but with no per-row breakdown, if such a sheet exists).
+    columns and an identifiable group column at all, or turns out to be
+    the Packing Dept pattern -- callers should leave the sheet's own
+    reported values untouched in either case.
     """
     header_row, dt_cols = find_downtime_range(ws)
     total_row = find_total_row(ws)
@@ -188,15 +216,50 @@ def corrected_day_availability(ws) -> tuple[int, int, float] | None:
     if planned_run_col is None or planned_shutdown_col is None:
         return None
 
-    planned_run_time = _num(ws.cell(row=total_row, column=planned_run_col).value)
-    planned_shutdown = _num(ws.cell(row=total_row, column=planned_shutdown_col).value)
-    available_after_shutdown = max(0, planned_run_time - planned_shutdown)
+    group_col, _ = find_group_column(ws, header_row, 7, total_row)
+    if group_col is None:
+        return None
 
-    downtime_sum = sum(_num(ws.cell(row=total_row, column=c).value) for c in dt_cols)
-    run_time = max(0, available_after_shutdown - downtime_sum)
+    if find_exact_header_column(ws, header_row, "speed") is not None:
+        return None  # Packing Dept pattern -- already correct, nothing to fix
 
-    availability_pct = (run_time / available_after_shutdown * 100) if available_after_shutdown else 0.0
-    return int(round(available_after_shutdown)), int(round(run_time)), availability_pct
+    raw_rows: list[tuple[float, float, float]] = []  # (planned_run_row, planned_shutdown_row, raw downtime_row)
+    for r in range(7, total_row):
+        group_val = ws.cell(row=r, column=group_col).value
+        if group_val in (None, "") or str(group_val).strip().lower() in NON_GROUP_ROW_LABELS:
+            continue
+        planned_run_row = _num(ws.cell(row=r, column=planned_run_col).value)
+        planned_shutdown_row = _num(ws.cell(row=r, column=planned_shutdown_col).value)
+        if planned_run_row <= 0:
+            continue  # not scheduled on this row -- doesn't count either way
+        downtime_raw_row = sum(_num(ws.cell(row=r, column=c).value) for c in dt_cols)
+        raw_rows.append((planned_run_row, planned_shutdown_row, downtime_raw_row))
+
+    if not raw_rows:
+        return None
+
+    # Each row is its own product's genuinely distinct slice of the day
+    # (never a shared constant repeated across rows -- that's the Packing
+    # Dept pattern, already excluded above), so every row counts, including
+    # a product listed more than once for two distinct time slots (e.g.
+    # Kuiper's "FryO Sweet & Sour") -- both slots are real time and both
+    # must be summed, not deduped by product name.
+    all_rows: list[tuple[float, float]] = []
+    for planned_run_row, planned_shutdown_row, downtime_raw_row in raw_rows:
+        available_row = max(0, planned_run_row - planned_shutdown_row)
+        if available_row <= 0:
+            continue
+        downtime_row = min(available_row, downtime_raw_row)
+        all_rows.append((available_row, downtime_row))
+
+    if not all_rows:
+        return 0, 0, 0.0
+
+    total_available = sum(avail for avail, _ in all_rows)
+    availability_pct = sum(avail - dt for avail, dt in all_rows) / total_available * 100
+    run_time = round(sum(avail - dt for avail, dt in all_rows))
+
+    return int(round(total_available)), int(run_time), round(availability_pct, 2)
 
 
 def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
@@ -389,30 +452,38 @@ def parse_machine_group_records(
     granularity for whatever layout matched: Packing Dept never tracks good-
     unit counts per row, but Production Dept does (see PRODUCTION_ROW_HEADERS).
 
-    `avail_time` is the WHOLE SHEET's shared schedule window (from the
-    summary anchor block) -- the same for every row on the shift (verified
-    against real formulas: "Plant operating time" is an absolute-reference
-    constant, not a per-row figure). A line/product often spans multiple
-    rows on one sheet (Packing Dept: many machine-asset rows running the
-    same SKU; Production Dept: the same product occasionally listed twice)
-    -- summing that shared constant once per row would multiply a single
-    shift's time window by its row count, so only the FIRST row seen for a
-    given group on this sheet carries it into the `availTime` field; the
-    rest carry 0. idealTargetOutput stays genuinely per-row-additive (each
-    row's own speed x the shared window), since ideal output CAPACITY really
-    does sum across parallel rows.
+    `avail_time`/`act_time` are the WHOLE SHEET's shared schedule window
+    (from the summary anchor block) -- the same for every row on the shift
+    (verified against real formulas: "Plant operating time" is an absolute-
+    reference constant, not a per-row figure). This shared window is only
+    meaningful for PACKING Dept, where every row is a separate machine-asset
+    running the SAME product in parallel through the whole shift, so the
+    window genuinely applies to every one of them -- but summing it once per
+    row would multiply a single shift's time window by however many
+    machine-asset rows share that group, so only the FIRST row seen for a
+    given group on this sheet carries `avail_time`/`act_time` into the
+    `availTime`/`actTime` fields; the rest carry 0.
 
-Every row's own `run_time`/Availability % is computed as (Planned run Time
-    - planned shutdown) - downtime -- same correction as
-    corrected_day_availability, applied at row granularity, rather than
-    read directly from the sheet's own (uncorrected) "Run Time in minutes"/
-    "Availability Percentage" columns. This is used directly for Production
-    Dept's stored actTime (each product genuinely occupies its own,
-    independently-additive slice of the shift). Packing Dept's stored
-    actTime instead uses `act_time` (the shared param -- every machine runs
-    for the same shared shift duration, so it's deduped the same way
-    `availTime` is above) -- `run_time` there is only used to flag whether
-    THIS row ran at all (actMachines) and to detect genuinely blank rows.
+    Production Dept has no such shared window at the per-product level: each
+    row genuinely occupies its own, independently-additive slice of the
+    day's schedule (`available_after_shutdown_row` below), including a
+    product occasionally listed twice for two distinct time slots (e.g.
+    Kuiper's "FryO Sweet & Sour") -- both slots are real time and must both
+    be counted, never deduped by key the way Packing Dept's shared window
+    is. So Production Dept's `availTime`/`actTime`/`idealTargetOutput` all
+    use this row's own baseline/run_time directly, summed across however
+    many rows share that group.
+
+Every row's own `run_time`/Availability % is computed as baseline -
+    downtime, same correction as corrected_day_availability, applied at row
+    granularity, rather than read directly from the sheet's own
+    (uncorrected) "Run Time in minutes"/"Availability Percentage" columns --
+    but the baseline itself differs by department (see
+    corrected_day_availability for why): Production Dept's "Planned run
+    Time" does NOT have shutdown subtracted, so it's subtracted here
+    (baseline = Planned run Time - planned shutdown); Packing Dept's
+    ALREADY does (baseline = Planned run Time as-is; subtracting shutdown
+    again would double-count it).
 
     A row that's entirely zero (no run time, no output, no downtime) is
     dropped rather than kept as a zero-value day -- Production Dept's sheets
@@ -455,17 +526,26 @@ Every row's own `run_time`/Availability % is computed as (Planned run Time
         }
 
         # Same correction as corrected_day_availability, applied per row
-        # instead of at the whole-sheet Total row -- planned shutdown is
+        # instead of at the whole-sheet Total row: planned shutdown is
         # excluded from the baseline before measuring downtime against it,
         # rather than trusting the sheet's own (uncorrected) "Run Time in
-        # minutes"/"Availability Percentage" columns. Applies to both header
-        # layouts alike (both have "Planed run Time"/"planned shut down").
+        # minutes"/"Availability Percentage" columns -- but ONLY for
+        # Production Dept, where "Planned run Time" genuinely does NOT
+        # already have shutdown subtracted (verified). Packing Dept's
+        # "Planned run Time" DOES already have it subtracted (verified: it
+        # always equals the summary anchor's own "Plant operating time"
+        # minus "planned shut down") -- subtracting it again here would
+        # double-count it, so Packing Dept rows use "Planned run Time" as
+        # the baseline directly, matching corrected_day_availability's own
+        # department-aware handling.
+        planned_run_time_row = _num(ws.cell(row=r, column=cols["planned_run_time"]).value)
+        planned_shutdown_row = _num(ws.cell(row=r, column=cols["planned_shutdown"]).value)
+        available_after_shutdown_row = (
+            max(0, planned_run_time_row - planned_shutdown_row) if quality_tracked else planned_run_time_row
+        )
         # Clamped at 0: a few real rows compute a negative figure (e.g. a
         # changeover logged against a product that was never scheduled that
         # shift) -- not a meaningful quantity to carry into a displayed total.
-        planned_run_time_row = _num(ws.cell(row=r, column=cols["planned_run_time"]).value)
-        planned_shutdown_row = _num(ws.cell(row=r, column=cols["planned_shutdown"]).value)
-        available_after_shutdown_row = max(0, planned_run_time_row - planned_shutdown_row)
         run_time = int(round(max(0, available_after_shutdown_row - sum(downtime.values()))))
         availability_pct_row = (
             round(run_time / available_after_shutdown_row * 100, 2) if available_after_shutdown_row else 0.0
@@ -488,15 +568,32 @@ Every row's own `run_time`/Availability % is computed as (Planned run Time
         capacity_act_time = run_time if quality_tracked else act_time
         stored_act_time = run_time if quality_tracked else (act_time if is_first_for_key else 0)
 
+        # Same department split for the baseline itself. Production Dept:
+        # available_after_shutdown_row is THIS product's own scheduled slice
+        # of the day, genuinely additive across rows -- including a product
+        # occasionally listed twice in two distinct time slots (e.g.
+        # Kuiper's "FryO Sweet & Sour"), where both slices are real and must
+        # both count (never dedup this the way the shared `avail_time` param
+        # below is deduped, or actTime can end up exceeding it). Packing
+        # Dept: `avail_time` is one shared shift-duration constant repeated
+        # on every one of a product's machine-asset rows, so only the first
+        # row for a group carries it; summing it across rows would multiply
+        # a single shift window by however many rows share that group.
+        stored_avail_time = (
+            int(round(available_after_shutdown_row)) if quality_tracked
+            else (avail_time if is_first_for_key else 0)
+        )
+        capacity_avail_time = available_after_shutdown_row if quality_tracked else avail_time
+
         record = {
             "sheet": sheet_name,
             "rawGroupLabel": raw_label,
             "availMachines": 1,
             "actMachines": 1 if run_time > 0 else 0,
             "avgSpeed": speed,
-            "availTime": avail_time if is_first_for_key else 0,
+            "availTime": stored_avail_time,
             "actTime": stored_act_time,
-            "idealTargetOutput": speed * avail_time,
+            "idealTargetOutput": speed * capacity_avail_time,
             "actualTargetOutput": speed * capacity_act_time,
             "availabilityPct": round(availability_pct_row, 2),
             "targetCounter": int(_num(ws.cell(row=r, column=cols["target_counter"]).value)),
@@ -639,6 +736,15 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
     # no clean sibling ever exists for those dates at all).
     sheet_info: dict[str, tuple[str, str, str, str | None]] = {}  # name -> (date, shift_code, base_code, suffix)
     clean_bases: dict[str, set[str]] = {}
+    # (date, base_code) -> clean sheet names that resolve to it, in workbook
+    # order -- catches a different duplication pattern than the "(NN)" suffix
+    # above: two "clean" sheets that are literally the same date+shift but
+    # spelled with inconsistent year-digit width (e.g. HNC 1 has both
+    # "10-02-26" and "10-02-2026" for 2026-02-10). Neither has a suffix, so
+    # neither is caught by the check above, and both would otherwise be
+    # aggregated together as if they were genuinely separate shifts, doubling
+    # that date's numbers.
+    clean_sheet_names: dict[tuple[str, str], list[str]] = {}
     for name in wb.sheetnames:
         if should_skip_sheet(name):
             skipped_sheets.append(name)
@@ -651,9 +757,21 @@ def parse_workbook(config: ProductConfig) -> ParseResult:
         sheet_info[name] = (date_iso, shift_code, base_code, suffix)
         if suffix is None:
             clean_bases.setdefault(date_iso, set()).add(base_code)
+            clean_sheet_names.setdefault((date_iso, base_code), []).append(name)
+
+    # Keep only the first clean sheet for each (date, shift) pair; any others
+    # are the same real-world shift reported twice under a different sheet
+    # name, so they're treated exactly like a "(NN)" duplicate -- skipped,
+    # not aggregated.
+    duplicate_format_sheets: set[str] = set()
+    for names in clean_sheet_names.values():
+        duplicate_format_sheets.update(names[1:])
 
     # Pass 2: parse everything that isn't a confirmed duplicate.
     for name, (date_iso, shift_code, base_code, suffix) in sheet_info.items():
+        if name in duplicate_format_sheets:
+            skipped_sheets.append(name)  # same date+shift as another clean sheet, different name format
+            continue
         if suffix is not None and base_code in clean_bases.get(date_iso, ()):
             skipped_sheets.append(name)  # duplicate/edit-history copy of the clean sheet
             continue

@@ -531,6 +531,13 @@ h1, h2, h3, .font-display {
   color: #fff;
 }
 
+.trend-section .panel-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: -6px;
+  margin-bottom: 14px;
+}
+
 .trend-section .chart-wrap {
   position: relative;
   height: 300px;

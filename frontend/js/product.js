@@ -367,8 +367,9 @@ const Product = (() => {
       avgAvailabilityPct: avg("availabilityPct"),
       avgPerformancePct: avg("performancePct"),
       avgQualityPct: hasOee ? avg("qualityPct") : null,
-      avgActMachines: avg("actMachines"),
-      avgAvailMachines: avg("availMachines"),
+      // A fixed capacity figure (peak observed), not an average -- machines
+      // are a whole-number count, not something that sensibly fractions.
+      maxAvailMachines: Math.max(...records.map((r) => r.availMachines)),
       bestDay,
       worstDay,
       rankedBy: rankKey,
@@ -431,7 +432,7 @@ const Product = (() => {
 
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), rangeLabel);
-    addKpiTile("Machines available", summary.avgAvailMachines.toFixed(1), "average across measured days");
+    addKpiTile("Machines available", String(summary.maxAvailMachines), "peak observed for this product");
     addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
     addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
 
@@ -468,7 +469,7 @@ const Product = (() => {
 
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), `${rangeStart} – ${rangeEnd}`);
-    addKpiTile("Machines available", summary.avgAvailMachines.toFixed(1), "average across measured days");
+    addKpiTile("Machines available", String(summary.maxAvailMachines), "peak observed for this product");
     addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
     addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
 
@@ -511,6 +512,11 @@ const Product = (() => {
       () => openDowntimeModal(),
     );
     addKpiTile("Units produced", r.actualCounter.toLocaleString(), isShiftView ? r.sheet : (hasMachine ? state.selectedMachines.join(" + ") : day.sheets.join(", ")));
+    addKpiTile(
+      "Total labor",
+      hasMachine ? "Not tracked" : String(r.totalLabor),
+      hasMachine ? "labor isn't tracked per machine/line" : (isShiftView ? "assigned to this shift" : "assigned this day"),
+    );
 
     el("outputPanelSub").textContent = isShiftView
       ? `Ideal vs. achievable vs. actual output for this shift`
@@ -567,6 +573,25 @@ const Product = (() => {
   }
 
   function renderTrendSection() {
+    const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
+
+    // The whole-product Overview shows how production responds to man-hours
+    // instead of the usual OEE/Availability/Performance-over-TIME trend --
+    // there's no meaningful "recent window" for this one (it's not a time
+    // series at all), and it isn't tracked per machine/line, so this only
+    // ever applies to the plain, no-machine-selected overview.
+    if (isPlainOverview) {
+      el("trendToggle").style.display = "none";
+      el("trendHeading").textContent = "Production vs. man-hours";
+      el("trendPanelSub").style.display = "";
+      el("trendPanelSub").textContent =
+        "Current year to date -- days grouped by man-hours worked, least to most, showing how output responds";
+      Charts.renderProductionVsManHoursChart("trendChart", currentAllRecords());
+      return;
+    }
+
+    el("trendHeading").textContent = "OEE · Availability · Performance over time";
+    el("trendPanelSub").style.display = "none";
     el("trendToggle").style.display = state.mode === "range" ? "none" : "";
 
     if (state.mode === "range") {

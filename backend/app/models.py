@@ -105,8 +105,7 @@ class ProductSummary(BaseModel):
     totalIdealOutput: float
     totalActualOutput: float
     totalStockTransferred: float
-    avgAvailMachines: float
-    avgActMachines: float
+    maxAvailMachines: int  # peak machines/lines available across the range -- a fixed capacity figure, not an average
     downtimeTotals: dict[str, float]
     bestDay: DayRecord
     worstDay: DayRecord
