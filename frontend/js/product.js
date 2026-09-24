@@ -12,6 +12,7 @@ const Product = (() => {
     unitDisplayName: null,
     siblingProducts: [], // [{slug, displayName}], products in the same department -- tab bar
     overview: null,
+    gasSummary: null, // null if this product has no gas meter data registered (see backend/data/gas_readings.json)
     allDates: [],
     recordsByDate: {},
     allRecords: [], // sorted ascending by date, day-level (combined) records
@@ -50,13 +51,15 @@ const Product = (() => {
       state.machineRecordsByDate = {};
       state.machineAllRecords = {};
 
-      const [overview, allDates, machines] = await Promise.all([
+      const [overview, allDates, machines, gasSummary] = await Promise.all([
         Api.getOverview(slug),
         Api.listDays(slug),
         Api.getMachines(slug),
+        Api.getGasSummary(slug),
       ]);
       state.overview = overview;
       state.allDates = allDates;
+      state.gasSummary = gasSummary;
 
       // Only re-fetch the department (and its product list, for the tab
       // bar) if we've actually moved to a different department -- e.g.
@@ -329,6 +332,7 @@ const Product = (() => {
       renderDayMode();
     }
     renderTrendSection();
+    renderGasSection();
   }
 
   function recordsInSelectedRange() {
@@ -575,18 +579,22 @@ const Product = (() => {
   function renderTrendSection() {
     const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
 
-    // The whole-product Overview shows how production responds to man-hours
-    // instead of the usual OEE/Availability/Performance-over-TIME trend --
-    // there's no meaningful "recent window" for this one (it's not a time
-    // series at all), and it isn't tracked per machine/line, so this only
-    // ever applies to the plain, no-machine-selected overview.
+    // The whole-product Overview shows how output RATE (units/hour of run
+    // time, not raw output) responds to headcount, instead of the usual
+    // OEE/Availability/Performance-over-TIME trend -- there's no meaningful
+    // "recent window" for this one (it's not a time series at all), and
+    // it isn't tracked per machine/line, so this only ever applies to the
+    // plain, no-machine-selected overview. Normalizing by run time (rather
+    // than plotting against man-hours = headcount x run-time) isolates
+    // headcount's own effect: a longer shift alone shouldn't inflate the
+    // number the way it would with raw output or man-hours.
     if (isPlainOverview) {
       el("trendToggle").style.display = "none";
-      el("trendHeading").textContent = "Production vs. man-hours";
+      el("trendHeading").textContent = "Output rate vs. headcount";
       el("trendPanelSub").style.display = "";
       el("trendPanelSub").textContent =
-        "Current year to date -- days grouped by man-hours worked, least to most, showing how output responds";
-      Charts.renderProductionVsManHoursChart("trendChart", currentAllRecords());
+        "Current year to date -- days grouped by headcount, least to most, showing whether more staff actually produces faster";
+      Charts.renderOutputRateVsLaborChart("trendChart", currentAllRecords());
       return;
     }
 
@@ -608,6 +616,47 @@ const Product = (() => {
       ? currentAllRecords()
       : getRecentWindow(endDate, 60);
     Charts.renderTrendChart("trendChart", records, state.trendRangeMode);
+  }
+
+  // Gas meter readings are only entered manually for a handful of products
+  // (see backend/data/gas_readings.json) and are inherently monthly (one
+  // start/end meter reading per month, no daily granularity) -- so this
+  // panel only makes sense on the whole-product Overview, same condition
+  // as the man-hours-vs-production chart above, and is hidden entirely for
+  // any product with no gas data registered.
+  function renderGasSection() {
+    const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
+    const section = el("gasSection");
+    if (!isPlainOverview || !state.gasSummary || state.gasSummary.months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    const months = state.gasSummary.months;
+    Charts.renderGasVsProductionChart("gasChart", months);
+
+    const table = el("gasTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th class="numeric">Gas Consumed</th>
+          <th class="numeric">Units Produced</th>
+          <th class="numeric">Gas per 1,000 Units</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${months.map((m) => `
+          <tr>
+            <td>${m.monthLabel}</td>
+            <td class="numeric">${m.gasConsumed.toLocaleString()}</td>
+            <td class="numeric">${m.unitsProduced.toLocaleString()}</td>
+            <td class="numeric">${m.gasPerThousandUnits.toLocaleString()}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
   }
 
   function setBar(suffix, value) {

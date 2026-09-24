@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from ..cache import compute_summary, load_cache, save_cache
+from ..gas import compute_gas_summary
 from ..models import (
     CompanyOrgInfo,
     DayRecord,
@@ -16,7 +17,9 @@ from ..models import (
     DepartmentOrgInfo,
     DepartmentOverview,
     DepartmentProductEntry,
+    GasMonthEntry,
     OeeTrendPoint,
+    ProductGasSummary,
     ProductInfo,
     ProductMachines,
     ProductOrgInfo,
@@ -176,6 +179,21 @@ def get_product_machines(slug: str):
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     groups = _get_groups(slug)
     return ProductMachines(machines=sorted(groups.keys()), records=groups)
+
+
+@router.get("/products/{slug}/gas", response_model=ProductGasSummary)
+def get_product_gas(slug: str):
+    """Gas meter consumption vs. production, month by month -- only
+    registered for the handful of products with manually-entered gas
+    meter readings (see gas.py). 404 means no gas panel for this product,
+    not an error."""
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    records = _get_records(slug)
+    months = compute_gas_summary(slug, records)
+    if months is None:
+        raise HTTPException(status_code=404, detail=f"no gas meter data registered for '{slug}'")
+    return ProductGasSummary(slug=slug, months=[GasMonthEntry(**m) for m in months])
 
 
 @router.post("/products/{slug}/refresh", response_model=ProductSummary)

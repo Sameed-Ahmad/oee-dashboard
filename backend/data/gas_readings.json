@@ -1,0 +1,17 @@
+{
+  "hnc-1": [
+    {"startDate": "2026-06-01", "startReading": 26449.60, "endDate": "2026-06-30", "endReading": 31777.44},
+    {"startDate": "2026-07-01", "startReading": 31777.44, "endDate": "2026-07-31", "endReading": 36570.36},
+    {"startDate": "2026-08-01", "startReading": 36570.36, "endDate": "2026-08-31", "endReading": 40192.84}
+  ],
+  "hnc-3": [
+    {"startDate": "2026-06-01", "startReading": 1342738.8, "endDate": "2026-06-30", "endReading": 1353096.1},
+    {"startDate": "2026-07-01", "startReading": 1353096.1, "endDate": "2026-07-31", "endReading": 1367222.5},
+    {"startDate": "2026-08-01", "startReading": 1367222.5, "endDate": "2026-08-31", "endReading": 1382717.0}
+  ],
+  "pops": [
+    {"startDate": "2026-06-01", "startReading": 77216.47, "endDate": "2026-06-30", "endReading": 78020.17},
+    {"startDate": "2026-07-01", "startReading": 78020.17, "endDate": "2026-07-31", "endReading": 78972.01},
+    {"startDate": "2026-08-01", "startReading": 79017.61, "endDate": "2026-08-31", "endReading": 79878.26}
+  ]
+}

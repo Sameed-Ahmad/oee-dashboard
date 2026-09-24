@@ -112,6 +112,21 @@ class ProductSummary(BaseModel):
     dataQualityWarnings: list[str]
 
 
+class GasMonthEntry(BaseModel):
+    month: str  # "2026-06"
+    monthLabel: str  # "June 2026"
+    startDate: str
+    endDate: str
+    gasConsumed: float
+    unitsProduced: int
+    gasPerThousandUnits: float
+
+
+class ProductGasSummary(BaseModel):
+    slug: str
+    months: list[GasMonthEntry]
+
+
 class ProductInfo(BaseModel):
     slug: str
     displayName: str

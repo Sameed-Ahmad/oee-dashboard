@@ -21,11 +21,24 @@ const Api = (() => {
     return res.json();
   }
 
+  // A 404 here means "this product genuinely has no such data" (e.g. gas
+  // meter readings, only registered for a handful of products) -- not an
+  // error a caller should throw/alert on, so it resolves to null instead.
+  async function getOptional(path) {
+    const res = await fetch(BASE + path);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: ${res.status}`);
+    }
+    return res.json();
+  }
+
   return {
     listProducts: () => get("/products"),
     listDays: (slug) => get(`/products/${slug}/days`),
     getDay: (slug, date) => get(`/products/${slug}/days/${date}`),
     getOverview: (slug) => get(`/products/${slug}/overview`),
+    getGasSummary: (slug) => getOptional(`/products/${slug}/gas`),
     refresh: (slug) => post(`/products/${slug}/refresh`),
     // Full org chart -- not consumed by the frontend yet (only
     // shahi-1-packing has data), but real and correct. This is where a
