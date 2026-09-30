@@ -818,6 +818,16 @@ h1, h2, h3, .font-display {
   height: 320px;
 }
 
+.reliability-modal-box {
+  max-width: 700px;
+}
+
+.reliability-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 0;
+}
+
 /* ---------- Department overview page ---------- */
 .dept-hero {
   margin-top: 24px;

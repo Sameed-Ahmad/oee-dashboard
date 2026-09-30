@@ -23,5 +23,14 @@ const Utils = (() => {
     return `${n.toFixed(1)}%`;
   }
 
-  return { formatDateLong, formatDateShort, tierFor, pct };
+  // Availability/Performance/Quality/OEE % should never exceed 100 by
+  // definition -- mirrors backend/app/parser.py's _cap100, needed here too
+  // since a few client-side computations (combineLineRecords/
+  // computeRangeSummary in product.js) recompute Quality %/OEE % from raw
+  // summed counters rather than averaging already-capped per-day fields.
+  function cap100(n) {
+    return Math.min(n, 100);
+  }
+
+  return { formatDateLong, formatDateShort, tierFor, pct, cap100 };
 })();

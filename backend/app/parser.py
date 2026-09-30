@@ -149,6 +149,18 @@ def _num(value, default=0):
     return default
 
 
+def _cap100(pct: float) -> float:
+    """Availability/Performance/Quality/OEE % are all ratios that should
+    never exceed 100 by definition, but a handful of source sheets report
+    one slightly over anyway (e.g. Fry-O/Pops occasionally show >100%
+    Availability -- a genuine data-entry artifact in those workbooks, not a
+    parsing bug). Clamped at every point one of these four is computed, so
+    a >100% component can never inflate OEE % past 100 either (OEE is their
+    product, so capping each input first guarantees the output is capped
+    too, without needing a separate clamp on the OEE multiplication itself)."""
+    return min(pct, 100.0)
+
+
 def corrected_day_availability(ws) -> tuple[int, int, float] | None:
     """Recomputes the WHOLE DAY's available time, actual run time, and
     Availability % for PRODUCTION DEPT sheets only (HNC 1/HNC 3/Coated
@@ -300,13 +312,13 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
             "actMachines": int(_num(act_machines)),
             "actTime": int(_num(act_time)),
             "actualTargetOutput": float(_num(actual_target_output)),
-            "availabilityPct": float(_num(availability_pct)),
+            "availabilityPct": _cap100(float(_num(availability_pct))),
             "targetCounter": int(_num(target_counter)),
             "actualCounter": int(_num(actual_counter)),
-            "performancePct": float(_num(performance_pct)),
+            "performancePct": _cap100(float(_num(performance_pct))),
             "stockTransferred": int(_num(stock_transferred)),
-            "qualityPct": float(_num(quality_pct)),
-            "oeePct": float(_num(oee_pct)),
+            "qualityPct": _cap100(float(_num(quality_pct))),
+            "oeePct": _cap100(float(_num(oee_pct))),
             "totalLabor": int(_num(total_labor)),
             "outputPerLabor": float(_num(output_per_labor)),
             "downtime": downtime,
@@ -325,10 +337,10 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
         avail_time_corrected, act_time_corrected, availability_pct_corrected = corrected
         record["availTime"] = avail_time_corrected
         record["actTime"] = act_time_corrected
-        record["availabilityPct"] = round(availability_pct_corrected, 2)
-        record["oeePct"] = round(
-            availability_pct_corrected * record["performancePct"] * record["qualityPct"] / 10000, 2
-        )
+        record["availabilityPct"] = _cap100(round(availability_pct_corrected, 2))
+        record["oeePct"] = _cap100(round(
+            record["availabilityPct"] * record["performancePct"] * record["qualityPct"] / 10000, 2
+        ))
 
     return record, None
 
@@ -595,10 +607,10 @@ Every row's own `run_time`/Availability % is computed as baseline -
             "actTime": stored_act_time,
             "idealTargetOutput": speed * capacity_avail_time,
             "actualTargetOutput": speed * capacity_act_time,
-            "availabilityPct": round(availability_pct_row, 2),
+            "availabilityPct": _cap100(round(availability_pct_row, 2)),
             "targetCounter": int(_num(ws.cell(row=r, column=cols["target_counter"]).value)),
             "actualCounter": actual_count,
-            "performancePct": float(_num(ws.cell(row=r, column=cols["performance_pct"]).value)),
+            "performancePct": _cap100(float(_num(ws.cell(row=r, column=cols["performance_pct"]).value))),
             "stockTransferred": int(_num(ws.cell(row=r, column=cols["stock_transferred"]).value)),
             "totalLabor": 0,
             "downtime": downtime,
@@ -667,13 +679,21 @@ def aggregate_day(date_iso: str, shift_records: list[dict]) -> dict:
     sum_act_machines = s("actMachines")
     avail_pct_weight_sum = sum(r["availabilityPct"] * r["actMachines"] for r in shift_records)
 
-    availability_pct = (avail_pct_weight_sum / sum_act_machines) if sum_act_machines else 0.0
-    quality_pct = (sum_stock / sum_actual_counter * 100) if sum_actual_counter else 0.0
+    availability_pct = _cap100((avail_pct_weight_sum / sum_act_machines) if sum_act_machines else 0.0)
+    # quality_pct is recomputed from raw summed counters, not averaged from
+    # shifts' own (already-capped) qualityPct fields, so it needs its own
+    # cap: a data quirk where stockTransferred slightly exceeds
+    # actualCounter would otherwise push this over 100 independently of
+    # anything capped upstream.
+    quality_pct = _cap100((sum_stock / sum_actual_counter * 100) if sum_actual_counter else 0.0)
     output_per_labor = (sum_stock / sum_labor) if sum_labor else 0.0
 
     perf_weight_sum = sum(r["performancePct"] * r["actualCounter"] for r in shift_records)
-    performance_pct = (perf_weight_sum / sum_actual_counter) if sum_actual_counter else 0.0
+    performance_pct = _cap100((perf_weight_sum / sum_actual_counter) if sum_actual_counter else 0.0)
 
+    # Availability/Performance/Quality are already each capped at 100 above,
+    # so their product can't mathematically exceed 100 either -- no separate
+    # clamp needed here.
     oee_pct = availability_pct * performance_pct * quality_pct / 10000
 
     speed_weight_sum = sum(r["avgSpeed"] * r["actualCounter"] for r in shift_records)

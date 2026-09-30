@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..cache import compute_summary, load_cache, save_cache
 from ..gas import compute_gas_summary
+from ..labor_cost import compute_labor_cost_summary
 from ..models import (
     CompanyOrgInfo,
     DayRecord,
@@ -18,9 +19,11 @@ from ..models import (
     DepartmentOverview,
     DepartmentProductEntry,
     GasMonthEntry,
+    LaborCostMonthEntry,
     OeeTrendPoint,
     ProductGasSummary,
     ProductInfo,
+    ProductLaborCostSummary,
     ProductMachines,
     ProductOrgInfo,
     ProductSummary,
@@ -91,12 +94,26 @@ def _current_year() -> str:
     return str(datetime.date.today().year)
 
 
+def _is_real_day(record: dict) -> bool:
+    """A record with exactly 0% OEE isn't a genuine "bad production day" to
+    rank/average in -- verified against real data, it means nothing was
+    actually run that day/shift (a plant shutdown, holiday, or similarly
+    inactive stretch), not a worst-case performance to spotlight as the
+    "Toughest day." Excluded here, the single choke point every other
+    endpoint (days list, overview, best/worst day, department/unit trends)
+    already funnels through, so it disappears everywhere at once rather
+    than needing a special case in each. oeePct is None (not 0) for
+    machine/line records where Quality %/OEE % just isn't tracked at that
+    granularity -- that's "unavailable," not "zero," so it's kept."""
+    return record["oeePct"] is None or record["oeePct"] != 0
+
+
 def _get_records(slug: str) -> list[dict]:
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     records, _, _ = _load(slug)
     year = _current_year()
-    return [r for r in records if r["date"].startswith(year)]
+    return [r for r in records if r["date"].startswith(year) and _is_real_day(r)]
 
 
 def _get_groups(slug: str) -> dict[str, list[dict]]:
@@ -106,7 +123,7 @@ def _get_groups(slug: str) -> dict[str, list[dict]]:
     year = _current_year()
     filtered = {}
     for label, records in groups.items():
-        kept = [r for r in records if r["date"].startswith(year)]
+        kept = [r for r in records if r["date"].startswith(year) and _is_real_day(r)]
         if kept:  # a group with nothing left this year isn't worth listing
             filtered[label] = kept
     return filtered
@@ -190,10 +207,34 @@ def get_product_gas(slug: str):
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     records = _get_records(slug)
-    months = compute_gas_summary(slug, records)
-    if months is None:
+    result = compute_gas_summary(slug, records)
+    if result is None:
         raise HTTPException(status_code=404, detail=f"no gas meter data registered for '{slug}'")
-    return ProductGasSummary(slug=slug, months=[GasMonthEntry(**m) for m in months])
+    return ProductGasSummary(
+        slug=slug,
+        mmbtuPriceRs=result["mmbtuPriceRs"],
+        months=[GasMonthEntry(**m) for m in result["months"]],
+    )
+
+
+@router.get("/products/{slug}/labor-cost", response_model=ProductLaborCostSummary)
+def get_product_labor_cost(slug: str):
+    """Labor cost per unit of output (packets/KG), month by month -- only
+    registered for the 9 products with an identifiable cost-center line in
+    the separate Labor Cost Analysis workbook (see labor_cost.py; Extruder
+    has none). 404 means no labor-cost panel for this product, not an
+    error."""
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    result = compute_labor_cost_summary(slug)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"no labor-cost data registered for '{slug}'")
+    return ProductLaborCostSummary(
+        slug=slug,
+        sourceLines=result["sourceLines"],
+        shared=result["shared"],
+        months=[LaborCostMonthEntry(**m) for m in result["months"]],
+    )
 
 
 @router.post("/products/{slug}/refresh", response_model=ProductSummary)

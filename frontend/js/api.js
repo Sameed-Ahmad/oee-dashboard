@@ -39,6 +39,7 @@ const Api = (() => {
     getDay: (slug, date) => get(`/products/${slug}/days/${date}`),
     getOverview: (slug) => get(`/products/${slug}/overview`),
     getGasSummary: (slug) => getOptional(`/products/${slug}/gas`),
+    getLaborCostSummary: (slug) => getOptional(`/products/${slug}/labor-cost`),
     refresh: (slug) => post(`/products/${slug}/refresh`),
     // Full org chart -- not consumed by the frontend yet (only
     // shahi-1-packing has data), but real and correct. This is where a

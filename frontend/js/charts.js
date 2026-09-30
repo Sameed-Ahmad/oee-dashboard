@@ -453,93 +453,6 @@ const Charts = (() => {
     });
   }
 
-  // Answers "if we hire more/fewer people, does production actually move?"
-  // -- NOT the same question as plotting output against man-hours (headcount
-  // x run-time), which was tried first and rejected: a longer shift produces
-  // more man-hours AND more output even with the exact same headcount, so
-  // that chart mostly showed "longer shifts make more" (run-time, a
-  // scheduling/machine factor), swamping any real labor signal.
-  //
-  // This isolates headcount by normalizing output against run-time: y is
-  // OUTPUT RATE (units produced per hour of actual run time), so a longer
-  // shift no longer inflates the number, only genuinely producing faster
-  // does. x is headcount (totalLabor) alone. Days are sorted by headcount
-  // and grouped into ~10 equal-sized buckets (fewer if there isn't much
-  // data) for the same reason as before -- individual days are too noisy to
-  // read as a line -- each point is a bucket's own average headcount/rate.
-  //
-  // How to read it: if the rate stays roughly flat across headcount levels
-  // (even the leanest-staffed days), the line is already running near its
-  // rated machine speed regardless of staffing -- labor isn't the
-  // bottleneck, and hiring more probably won't move output much. If the
-  // rate climbs as headcount rises, understaffing is capping the line below
-  // its rated speed, and adding people would plausibly help. This is still
-  // observational, not a controlled experiment -- e.g. more staff might get
-  // assigned specifically on days higher output is already planned -- so
-  // it's a directional read, not a guarantee.
-  function renderOutputRateVsLaborChart(canvasId, records) {
-    destroy(canvasId);
-    const points = records
-      .map((r) => ({ labor: r.totalLabor, rate: r.actualCounter / (r.actTime / 60) }))
-      .filter((p) => p.labor > 0 && Number.isFinite(p.rate))
-      .sort((a, b) => a.labor - b.labor);
-
-    const numBins = Math.max(1, Math.min(10, Math.floor(points.length / 3)));
-    const binSize = Math.ceil(points.length / numBins) || 1;
-    const bucketed = [];
-    for (let i = 0; i < points.length; i += binSize) {
-      const slice = points.slice(i, i + binSize);
-      bucketed.push({
-        x: slice.reduce((s, p) => s + p.labor, 0) / slice.length,
-        y: slice.reduce((s, p) => s + p.rate, 0) / slice.length,
-      });
-    }
-
-    const ctx = document.getElementById(canvasId).getContext("2d");
-    instances[canvasId] = new Chart(ctx, {
-      type: "line",
-      data: {
-        datasets: [{
-          label: "Output rate",
-          data: bucketed,
-          borderColor: cssVar("--maroon"),
-          backgroundColor: "transparent",
-          pointRadius: 3,
-          pointBackgroundColor: cssVar("--maroon"),
-          borderWidth: 2,
-          tension: 0.15,
-        }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "nearest", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (item) => `${Math.round(item.parsed.y).toLocaleString()} units/hour at ~${Math.round(item.parsed.x).toLocaleString()} workers`,
-            },
-          },
-        },
-        scales: {
-          x: {
-            type: "linear",
-            title: { display: true, text: "Headcount (labor)", font: baseFont() },
-            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
-            grid: { color: cssVar("--border") },
-          },
-          y: {
-            min: 0,
-            title: { display: true, text: "Units produced per hour", font: baseFont() },
-            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
-            grid: { color: cssVar("--border") },
-          },
-        },
-      },
-    });
-  }
-
   // labels: x-axis categories (month names, or years). series: [{ label:
   // "Packing Dept", data: [oee, oee, ...] }, ...] -- one line per
   // department, each its own fixed color (so the two departments stay
@@ -596,6 +509,8 @@ const Charts = (() => {
   // at all, same reasoning as the department trend chart.
   function renderGasVsProductionChart(canvasId, months) {
     destroy(canvasId);
+    const outputUnit = months.length ? months[0].outputUnit : "units";
+    const unitSingular = outputUnit === "Packets" ? "Packet" : outputUnit;
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
       data: {
@@ -603,7 +518,7 @@ const Charts = (() => {
         datasets: [
           {
             type: "bar",
-            label: "Gas consumed",
+            label: "Gas consumed (MMBTU)",
             data: months.map((m) => m.gasConsumed),
             backgroundColor: cssVar("--gold"),
             borderWidth: 0,
@@ -612,7 +527,7 @@ const Charts = (() => {
           },
           {
             type: "line",
-            label: "Units produced",
+            label: `${outputUnit} produced`,
             data: months.map((m) => m.unitsProduced),
             borderColor: cssVar("--maroon"),
             backgroundColor: "transparent",
@@ -633,11 +548,14 @@ const Charts = (() => {
           tooltip: {
             callbacks: {
               label: (item) => item.dataset.yAxisID === "y1"
-                ? `${item.dataset.label}: ${Math.round(item.parsed.y).toLocaleString()} units`
+                ? `${item.dataset.label}: ${Math.round(item.parsed.y).toLocaleString()}`
                 : `${item.dataset.label}: ${item.parsed.y.toLocaleString()}`,
               afterBody: (items) => {
                 const m = months[items[0].dataIndex];
-                return `Gas per 1,000 units: ${m.gasPerThousandUnits.toLocaleString()}`;
+                return [
+                  `Gas per 1,000 ${outputUnit.toLowerCase()}: ${m.gasPerThousandUnits.toLocaleString()}`,
+                  `Gas cost per ${unitSingular.toLowerCase()}: Rs. ${m.gasCostPerUnit.toLocaleString()}`,
+                ];
               },
             },
           },
@@ -647,15 +565,88 @@ const Charts = (() => {
           y: {
             position: "left",
             min: 0,
-            title: { display: true, text: "Gas consumed", font: baseFont() },
+            title: { display: true, text: "Gas consumed (MMBTU)", font: baseFont() },
             ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
             grid: { color: cssVar("--border") },
           },
           y1: {
             position: "right",
             min: 0,
-            title: { display: true, text: "Units produced", font: baseFont() },
+            title: { display: true, text: `${outputUnit} produced`, font: baseFont() },
             ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { display: false },
+          },
+        },
+      },
+    });
+  }
+
+  // months: [{monthLabel, costPerUnit, manHoursPerUnit, outputUnit}] --
+  // same dual-axis bar+line pattern as renderGasVsProductionChart: bars
+  // for Cost/Unit (the headline "what does it cost to make one" figure,
+  // left axis), a line for Man-Hours/Unit (right axis, a related but
+  // differently-scaled quantity -- Rs. vs. hours -- so it needs its own
+  // axis, not a shared one).
+  function renderLaborCostChart(canvasId, months) {
+    destroy(canvasId);
+    const rawUnit = months.length ? months[0].outputUnit : "unit";
+    const unit = rawUnit === "Packets" ? "Packet" : rawUnit;
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            type: "bar",
+            label: `Cost per ${unit}`,
+            data: months.map((m) => m.costPerUnit),
+            backgroundColor: cssVar("--gold"),
+            borderWidth: 0,
+            yAxisID: "y",
+            order: 2,
+          },
+          {
+            type: "line",
+            label: `Man-hours per ${unit}`,
+            data: months.map((m) => m.manHoursPerUnit),
+            borderColor: cssVar("--maroon"),
+            backgroundColor: "transparent",
+            pointRadius: 4,
+            pointBackgroundColor: cssVar("--maroon"),
+            borderWidth: 2,
+            yAxisID: "y1",
+            order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => item.dataset.yAxisID === "y1"
+                ? `${item.dataset.label}: ${item.parsed.y.toFixed(5)}`
+                : `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            position: "left",
+            min: 0,
+            title: { display: true, text: `Cost per ${unit} (Rs.)`, font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+          y1: {
+            position: "right",
+            min: 0,
+            title: { display: true, text: `Man-hours per ${unit}`, font: baseFont() },
+            ticks: { font: baseFont() },
             grid: { display: false },
           },
         },
@@ -669,8 +660,8 @@ const Charts = (() => {
     renderOutputChartDay,
     renderOutputChartOverview,
     renderTrendChart,
-    renderOutputRateVsLaborChart,
     renderGasVsProductionChart,
+    renderLaborCostChart,
     renderRankedOeeChart,
     renderComparisonBarChart,
     renderProductComparisonTrendChart,

@@ -117,14 +117,35 @@ class GasMonthEntry(BaseModel):
     monthLabel: str  # "June 2026"
     startDate: str
     endDate: str
-    gasConsumed: float
+    gasConsumed: float  # MMBTU
     unitsProduced: int
+    outputUnit: str  # "Packets" | "KG"
     gasPerThousandUnits: float
+    gasCostPerUnit: float  # Rs. per unit produced, at ProductGasSummary.mmbtuPriceRs
 
 
 class ProductGasSummary(BaseModel):
     slug: str
+    mmbtuPriceRs: float
     months: list[GasMonthEntry]
+
+
+class LaborCostMonthEntry(BaseModel):
+    month: str  # "2026-01"
+    monthLabel: str  # "January 2026"
+    manHours: float
+    laborCost: float
+    output: float
+    outputUnit: str  # "Packets" | "KG"
+    costPerUnit: float
+    manHoursPerUnit: float
+
+
+class ProductLaborCostSummary(BaseModel):
+    slug: str
+    sourceLines: list[str]
+    shared: bool
+    months: list[LaborCostMonthEntry]
 
 
 class ProductInfo(BaseModel):

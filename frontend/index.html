@@ -174,6 +174,15 @@
       <div class="panel-sub">Monthly gas meter readings against units produced that month</div>
       <div class="chart-wrap"><canvas id="gasChart"></canvas></div>
       <table class="data-table" id="gasTable"></table>
+      <p class="reliability-empty" id="gasPriceNote"></p>
+    </section>
+
+    <section class="panel gas-section" id="laborCostSection" style="display:none">
+      <h2>Labor cost per unit</h2>
+      <div class="panel-sub" id="laborCostPanelSub">Monthly labor cost and man-hours against units produced that month</div>
+      <div class="chart-wrap"><canvas id="laborCostChart"></canvas></div>
+      <table class="data-table" id="laborCostTable"></table>
+      <p class="reliability-empty" id="laborCostSharedNote" style="display:none"></p>
     </section>
 
   </div>
@@ -209,6 +218,24 @@
     <button class="modal-close" id="downtimeModalClose" type="button" aria-label="Close">&times;</button>
     <h3 id="downtimeModalTitle">Downtime breakdown</h3>
     <div class="chart-wrap"><canvas id="downtimeModalChart"></canvas></div>
+  </div>
+</div>
+
+<!-- Equipment failure breakdown modal (opened from the MTBF/MTTR KPI tiles, product page only) -->
+<div class="modal-overlay" id="reliabilityModalOverlay">
+  <div class="modal-box reliability-modal-box">
+    <button class="modal-close" id="reliabilityModalClose" type="button" aria-label="Close">&times;</button>
+    <h3>Equipment failures (MTBF / MTTR basis)</h3>
+    <table class="data-table" id="reliabilityFailureTable"></table>
+  </div>
+</div>
+
+<!-- Loadshedding breakdown modal (opened from the Loadshedding KPI tile, product page only) -->
+<div class="modal-overlay" id="loadsheddingModalOverlay">
+  <div class="modal-box reliability-modal-box">
+    <button class="modal-close" id="loadsheddingModalClose" type="button" aria-label="Close">&times;</button>
+    <h3>External stoppages — Loadshedding (tracked separately, not counted in MTBF/MTTR)</h3>
+    <table class="data-table" id="reliabilityLoadsheddingTable"></table>
   </div>
 </div>
 

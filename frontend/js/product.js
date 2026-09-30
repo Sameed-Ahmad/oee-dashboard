@@ -13,6 +13,7 @@ const Product = (() => {
     siblingProducts: [], // [{slug, displayName}], products in the same department -- tab bar
     overview: null,
     gasSummary: null, // null if this product has no gas meter data registered (see backend/data/gas_readings.json)
+    laborCostSummary: null, // null if this product has no labor-cost line registered (see backend/app/labor_cost.py)
     allDates: [],
     recordsByDate: {},
     allRecords: [], // sorted ascending by date, day-level (combined) records
@@ -51,15 +52,17 @@ const Product = (() => {
       state.machineRecordsByDate = {};
       state.machineAllRecords = {};
 
-      const [overview, allDates, machines, gasSummary] = await Promise.all([
+      const [overview, allDates, machines, gasSummary, laborCostSummary] = await Promise.all([
         Api.getOverview(slug),
         Api.listDays(slug),
         Api.getMachines(slug),
         Api.getGasSummary(slug),
+        Api.getLaborCostSummary(slug),
       ]);
       state.overview = overview;
       state.allDates = allDates;
       state.gasSummary = gasSummary;
+      state.laborCostSummary = laborCostSummary;
 
       // Only re-fetch the department (and its product list, for the tab
       // bar) if we've actually moved to a different department -- e.g.
@@ -127,7 +130,10 @@ const Product = (() => {
     // summed good/total output, same ratio-of-sums the day-level aggregation
     // already uses, rather than just carrying one line's own figure over.
     const hasQuality = records[0].qualityPct != null;
-    const qualityPct = hasQuality && sumActualCounter ? (sumStock / sumActualCounter) * 100 : (hasQuality ? 0 : null);
+    // Recomputed from raw summed counters, not averaged from lines' own
+    // already-capped qualityPct fields, so it needs its own cap -- same
+    // reasoning as aggregate_day's quality_pct in the backend parser.
+    const qualityPct = hasQuality && sumActualCounter ? Utils.cap100((sumStock / sumActualCounter) * 100) : (hasQuality ? 0 : null);
     const oeePct = hasQuality ? (availabilityPct * performancePct * qualityPct) / 10000 : null;
 
     const downtime = {};
@@ -333,6 +339,7 @@ const Product = (() => {
     }
     renderTrendSection();
     renderGasSection();
+    renderLaborCostSection();
   }
 
   function recordsInSelectedRange() {
@@ -379,6 +386,166 @@ const Product = (() => {
       rankedBy: rankKey,
       downtimeTotals,
     };
+  }
+
+  // ---------- Reliability (MTBF/MTTR) -- estimated, computed client-side ----------
+
+  // Every day record needed (downtime minutes per category + actTime) is
+  // already loaded up front, so this needs no backend endpoint -- purely
+  // derived from records already in memory, same as computeRangeSummary.
+  //
+  // These are ESTIMATES, not exact MTBF/MTTR: the source data only has
+  // total downtime minutes per category per day, never individual failure
+  // timestamps or counts, so "this category had nonzero minutes this day"
+  // stands in for "one failure that day." Verified against real data this
+  // holds up fine for low-frequency categories (a handful of genuinely
+  // separate failures), but badly understates true frequency (and
+  // correspondingly overstates average repair time) for a category that
+  // fails more than once in the same shift -- e.g. Ishida's Electrical
+  // Breakdown averages ~11.5 hours per "occurrence" by this method, which
+  // is clearly several real failures collapsed into one shift's total, not
+  // one continuous outage. No fix is possible without a real event log
+  // (individual failure start/end timestamps), which doesn't exist in this
+  // data -- so this is deliberately labeled "(est.)" everywhere it's shown.
+  //
+  // Only genuine equipment failures count toward MTBF/MTTR (category name
+  // contains "breakdown"/"break down", excluding "preventive maintenance"
+  // since that's scheduled, not a failure). Loadshedding (utility/gas
+  // outages) is tracked as its own separate bucket -- the equipment didn't
+  // fail, the utility did, so it's kept out of the equipment-reliability
+  // figures entirely rather than either inflating or being silently
+  // dropped. Every other downtime cause (cleaning, changeover, labor,
+  // material delay, ...) isn't a "failure" in this sense at all and isn't
+  // counted in either bucket.
+  function classifyDowntimeCategory(name) {
+    const low = name.toLowerCase();
+    if (low.includes("loadshedding")) return "loadshedding";
+    if ((low.includes("breakdown") || low.includes("break down")) && !low.includes("preventive maintenance")) {
+      return "failure";
+    }
+    return null;
+  }
+
+  function summarizeReliabilityBucket(byCategory) {
+    const categories = Object.entries(byCategory)
+      .map(([category, b]) => ({
+        category,
+        occurrences: b.occurrences,
+        totalMinutes: Math.round(b.totalMinutes * 10) / 10,
+        avgMinutesPerOccurrence: Math.round((b.totalMinutes / b.occurrences) * 10) / 10,
+      }))
+      .sort((a, b) => b.totalMinutes - a.totalMinutes);
+    const occurrences = categories.reduce((s, c) => s + c.occurrences, 0);
+    const totalMinutes = Math.round(categories.reduce((s, c) => s + c.totalMinutes, 0) * 10) / 10;
+    return { occurrences, totalMinutes, categories };
+  }
+
+  function computeReliability(records) {
+    const byClass = { failure: {}, loadshedding: {} };
+    let totalRunTimeMinutes = 0;
+    records.forEach((r) => {
+      totalRunTimeMinutes += r.actTime;
+      Object.entries(r.downtime).forEach(([cat, minutes]) => {
+        if (!minutes) return;
+        const cls = classifyDowntimeCategory(cat);
+        if (!cls) return;
+        const bucket = byClass[cls][cat] || (byClass[cls][cat] = { occurrences: 0, totalMinutes: 0 });
+        bucket.occurrences += 1;
+        bucket.totalMinutes += minutes;
+      });
+    });
+
+    const failure = summarizeReliabilityBucket(byClass.failure);
+    const loadshedding = summarizeReliabilityBucket(byClass.loadshedding);
+
+    return {
+      failure: {
+        ...failure,
+        // Pooled across every logged failure in the whole dataset in view
+        // (total minutes / total occurrences, both summed across ALL
+        // categories and ALL days) -- NOT an average of each category's own
+        // avg-minutes-per-occurrence, which would let a rare-but-long
+        // category and a frequent-but-short one skew the result equally
+        // regardless of how many times each actually happened.
+        mttrMinutes: failure.occurrences ? Math.round((failure.totalMinutes / failure.occurrences) * 10) / 10 : null,
+        mtbfMinutes: failure.occurrences ? Math.round((totalRunTimeMinutes / failure.occurrences) * 10) / 10 : null,
+      },
+      loadshedding: {
+        ...loadshedding,
+        // Same pooling as MTTR above, applied to loadshedding incidents --
+        // average duration of ONE incident, not a count.
+        avgMinutesPerOccurrence: loadshedding.occurrences
+          ? Math.round((loadshedding.totalMinutes / loadshedding.occurrences) * 10) / 10
+          : null,
+      },
+    };
+  }
+
+  function formatMinutesAsHours(minutes) {
+    return `${(minutes / 60).toFixed(1)} hrs`;
+  }
+
+  function renderReliabilityTable(tableId, bucket) {
+    const table = el(tableId);
+    if (bucket.categories.length === 0) {
+      table.innerHTML = `<tbody><tr><td class="reliability-empty">None logged in this period.</td></tr></tbody>`;
+      return;
+    }
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th class="numeric">Occurrences (est.)</th>
+          <th class="numeric">Total minutes</th>
+          <th class="numeric">Avg minutes / occurrence</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${bucket.categories.map((c) => `
+          <tr>
+            <td>${c.category}</td>
+            <td class="numeric">${c.occurrences}</td>
+            <td class="numeric">${c.totalMinutes.toLocaleString()}</td>
+            <td class="numeric">${c.avgMinutesPerOccurrence.toLocaleString()}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
+  }
+
+  function openReliabilityModal(reliability) {
+    renderReliabilityTable("reliabilityFailureTable", reliability.failure);
+    Modal.open(el("reliabilityModalOverlay"));
+  }
+
+  function openLoadsheddingModal(reliability) {
+    renderReliabilityTable("reliabilityLoadsheddingTable", reliability.loadshedding);
+    Modal.open(el("loadsheddingModalOverlay"));
+  }
+
+  function addReliabilityKpiTiles(records) {
+    const reliability = computeReliability(records);
+    const f = reliability.failure;
+    const l = reliability.loadshedding;
+
+    addKpiTile(
+      "MTBF (est.)",
+      f.mtbfMinutes != null ? formatMinutesAsHours(f.mtbfMinutes) : "—",
+      f.occurrences ? "avg duration between failures" : "No failures logged this period",
+      () => openReliabilityModal(reliability),
+    );
+    addKpiTile(
+      "MTTR (est.)",
+      f.mttrMinutes != null ? formatMinutesAsHours(f.mttrMinutes) : "—",
+      f.occurrences ? "avg repair time per failure" : "No failures logged this period",
+      () => openReliabilityModal(reliability),
+    );
+    addKpiTile(
+      "Loadshedding (avg.)",
+      l.avgMinutesPerOccurrence != null ? formatMinutesAsHours(l.avgMinutesPerOccurrence) : "—",
+      l.occurrences ? "avg duration per incident" : "No loadshedding logged this period",
+      () => openLoadsheddingModal(reliability),
+    );
   }
 
   // ---------- Shared display helpers for a possibly-untracked OEE/Quality ----------
@@ -437,8 +604,19 @@ const Product = (() => {
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), rangeLabel);
     addKpiTile("Machines available", String(summary.maxAvailMachines), "peak observed for this product");
-    addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
-    addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
+    addKpiTile(
+      `Best day${bestWorstTileLabel(summary.rankedBy)}`,
+      bestWorstTileValue(summary.bestDay, summary.rankedBy),
+      Utils.formatDateShort(summary.bestDay.date) + " — click to view",
+      () => goToDate(summary.bestDay.date),
+    );
+    addKpiTile(
+      `Toughest day${bestWorstTileLabel(summary.rankedBy)}`,
+      bestWorstTileValue(summary.worstDay, summary.rankedBy),
+      Utils.formatDateShort(summary.worstDay.date) + " — click to view",
+      () => goToDate(summary.worstDay.date),
+    );
+    addReliabilityKpiTiles(records);
 
     el("outputPanelSub").textContent = "Ideal vs. actual output for the selected range";
     Charts.renderOutputChartOverview("outputChart", records);
@@ -474,8 +652,19 @@ const Product = (() => {
     el("kpiStrip").innerHTML = "";
     addKpiTile("Days measured", String(summary.daysCount), `${rangeStart} – ${rangeEnd}`);
     addKpiTile("Machines available", String(summary.maxAvailMachines), "peak observed for this product");
-    addKpiTile(`Best day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.bestDay, summary.rankedBy), Utils.formatDateShort(summary.bestDay.date));
-    addKpiTile(`Toughest day${bestWorstTileLabel(summary.rankedBy)}`, bestWorstTileValue(summary.worstDay, summary.rankedBy), Utils.formatDateShort(summary.worstDay.date));
+    addKpiTile(
+      `Best day${bestWorstTileLabel(summary.rankedBy)}`,
+      bestWorstTileValue(summary.bestDay, summary.rankedBy),
+      Utils.formatDateShort(summary.bestDay.date) + " — click to view",
+      () => goToDate(summary.bestDay.date),
+    );
+    addKpiTile(
+      `Toughest day${bestWorstTileLabel(summary.rankedBy)}`,
+      bestWorstTileValue(summary.worstDay, summary.rankedBy),
+      Utils.formatDateShort(summary.worstDay.date) + " — click to view",
+      () => goToDate(summary.worstDay.date),
+    );
+    addReliabilityKpiTiles(records);
 
     el("outputPanelSub").textContent = "Ideal vs. actual output, weekly totals across the full dataset" + machineSuffix;
     Charts.renderOutputChartOverview("outputChart", records);
@@ -577,27 +766,6 @@ const Product = (() => {
   }
 
   function renderTrendSection() {
-    const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
-
-    // The whole-product Overview shows how output RATE (units/hour of run
-    // time, not raw output) responds to headcount, instead of the usual
-    // OEE/Availability/Performance-over-TIME trend -- there's no meaningful
-    // "recent window" for this one (it's not a time series at all), and
-    // it isn't tracked per machine/line, so this only ever applies to the
-    // plain, no-machine-selected overview. Normalizing by run time (rather
-    // than plotting against man-hours = headcount x run-time) isolates
-    // headcount's own effect: a longer shift alone shouldn't inflate the
-    // number the way it would with raw output or man-hours.
-    if (isPlainOverview) {
-      el("trendToggle").style.display = "none";
-      el("trendHeading").textContent = "Output rate vs. headcount";
-      el("trendPanelSub").style.display = "";
-      el("trendPanelSub").textContent =
-        "Current year to date -- days grouped by headcount, least to most, showing whether more staff actually produces faster";
-      Charts.renderOutputRateVsLaborChart("trendChart", currentAllRecords());
-      return;
-    }
-
     el("trendHeading").textContent = "OEE · Availability · Performance over time";
     el("trendPanelSub").style.display = "none";
     el("trendToggle").style.display = state.mode === "range" ? "none" : "";
@@ -634,6 +802,8 @@ const Product = (() => {
     section.style.display = "";
 
     const months = state.gasSummary.months;
+    const unit = months[0].outputUnit;
+    const unitSingular = unit === "Packets" ? "Packet" : unit;
     Charts.renderGasVsProductionChart("gasChart", months);
 
     const table = el("gasTable");
@@ -641,9 +811,10 @@ const Product = (() => {
       <thead>
         <tr>
           <th>Month</th>
-          <th class="numeric">Gas Consumed</th>
-          <th class="numeric">Units Produced</th>
-          <th class="numeric">Gas per 1,000 Units</th>
+          <th class="numeric">Gas Consumed (MMBTU)</th>
+          <th class="numeric">${unit} Produced</th>
+          <th class="numeric">Gas per 1,000 ${unit}</th>
+          <th class="numeric">Gas Cost / ${unitSingular} (Rs.)</th>
         </tr>
       </thead>
       <tbody>
@@ -653,10 +824,75 @@ const Product = (() => {
             <td class="numeric">${m.gasConsumed.toLocaleString()}</td>
             <td class="numeric">${m.unitsProduced.toLocaleString()}</td>
             <td class="numeric">${m.gasPerThousandUnits.toLocaleString()}</td>
+            <td class="numeric">${m.gasCostPerUnit.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
           </tr>
         `).join("")}
       </tbody>
     `;
+
+    el("gasPriceNote").textContent =
+      `Gas cost assumes Rs. ${state.gasSummary.mmbtuPriceRs.toLocaleString()} per MMBTU.`;
+  }
+
+  // Labor cost data (see backend/app/labor_cost.py) comes from a separate,
+  // standalone monthly workbook -- not the day-by-day OEE sheets -- so,
+  // same reasoning as the gas panel above, this only makes sense on the
+  // whole-product Overview, and is hidden entirely for any product with no
+  // labor-cost line registered (Extruder has none at all -- see the
+  // module docstring for why).
+  function renderLaborCostSection() {
+    const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
+    const section = el("laborCostSection");
+    if (!isPlainOverview || !state.laborCostSummary || state.laborCostSummary.months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    const summary = state.laborCostSummary;
+    const months = summary.months;
+    const unit = months[0].outputUnit;
+
+    el("laborCostPanelSub").textContent = summary.shared
+      ? `Monthly labor cost per ${unit.toLowerCase()} produced -- shared/blended with another product, since the source labor-cost data doesn't separate them (see below)`
+      : `Monthly labor cost and man-hours against ${unit.toLowerCase()} produced that month`;
+
+    Charts.renderLaborCostChart("laborCostChart", months);
+
+    const table = el("laborCostTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th class="numeric">Output (${unit})</th>
+          <th class="numeric">Man-Hours</th>
+          <th class="numeric">Labor Cost (Rs.)</th>
+          <th class="numeric">Cost / ${unit === "Packets" ? "Packet" : "KG"}</th>
+          <th class="numeric">Man-Hours / ${unit === "Packets" ? "Packet" : "KG"}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${months.map((m) => `
+          <tr>
+            <td>${m.monthLabel}</td>
+            <td class="numeric">${m.output.toLocaleString()}</td>
+            <td class="numeric">${m.manHours.toLocaleString()}</td>
+            <td class="numeric">${m.laborCost.toLocaleString()}</td>
+            <td class="numeric">${m.costPerUnit.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+            <td class="numeric">${m.manHoursPerUnit.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
+
+    const sharedNote = el("laborCostSharedNote");
+    if (summary.shared) {
+      sharedNote.style.display = "";
+      sharedNote.textContent = "Coated Peanut and Namak Para share one combined labor-cost line in the source " +
+        "workbook, so both products show this identical figure -- there's no way to separate them at the source.";
+    } else {
+      sharedNote.style.display = "none";
+    }
   }
 
   function setBar(suffix, value) {
@@ -743,6 +979,19 @@ const Product = (() => {
     render();
   }
 
+  // Switches straight to Day view for a specific date, leaving the current
+  // machine/line selection untouched -- used both by the calendar's own
+  // day-click handler and by the Best/Toughest day KPI tiles (so clicking
+  // either jumps straight to that day instead of just naming it).
+  function goToDate(dateStr) {
+    state.mode = "day";
+    state.selectedDate = dateStr;
+    state.selectedShift = "combined";
+    setTrendToggle("recent");
+    Modal.close(el("dateModalOverlay"));
+    render();
+  }
+
   function onCalendarDayClick(dateStr) {
     if (state.calendarSelectMode === "range") {
       if (!state.pendingRangeStart) {
@@ -754,12 +1003,7 @@ const Product = (() => {
       }
       return;
     }
-    state.mode = "day";
-    state.selectedDate = dateStr;
-    state.selectedShift = "combined";
-    setTrendToggle("recent");
-    Modal.close(el("dateModalOverlay"));
-    render();
+    goToDate(dateStr);
   }
 
   function onMonthLabelClick() {
@@ -823,6 +1067,8 @@ const Product = (() => {
     el("dateSelectorBtn").addEventListener("click", openDateModal);
     Modal.wireOverlay(el("dateModalOverlay"), el("dateModalClose"));
     Modal.wireOverlay(el("downtimeModalOverlay"), el("downtimeModalClose"));
+    Modal.wireOverlay(el("reliabilityModalOverlay"), el("reliabilityModalClose"));
+    Modal.wireOverlay(el("loadsheddingModalOverlay"), el("loadsheddingModalClose"));
 
     el("overviewBtn").addEventListener("click", () => {
       state.mode = "overview";
