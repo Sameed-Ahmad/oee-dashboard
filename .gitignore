@@ -1,7 +1,6 @@
 .venv/
-backend/data/processed/
+backend/data/
 __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
-backend/data/raw/
