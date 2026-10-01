@@ -1,4 +1,4 @@
-from app.gas import MMBTU_PRICE_RS, compute_gas_summary
+from app.gas import MMBTU_PRICE_RS, compute_gas_summary, compute_total_gas_cost
 
 
 def _day(date_iso, stock_transferred):
@@ -47,3 +47,19 @@ def test_compute_gas_summary_zero_production_month_has_zero_ratio():
         assert m["unitsProduced"] == 0
         assert m["gasPerThousandUnits"] == 0.0
         assert m["gasCostPerUnit"] == 0.0
+
+
+def test_compute_total_gas_cost_sums_only_products_with_gas_data():
+    records = [_day(f"2026-06-{d:02d}", 1000) for d in range(1, 31)]
+    # fryo/ishida/nimco have no gas readings registered at all -- only pops
+    # should contribute, and the department total must reflect that.
+    result = compute_total_gas_cost(["fryo", "pops", "ishida", "nimco"], {"pops": records})
+    assert result is not None
+    assert result["products"] == ["pops"]
+    pops_only = compute_gas_summary("pops", records)
+    expected_total = sum(m["gasConsumed"] * MMBTU_PRICE_RS for m in pops_only["months"])
+    assert result["totalRs"] == round(expected_total, 2)
+
+
+def test_compute_total_gas_cost_no_products_have_gas_data_returns_none():
+    assert compute_total_gas_cost(["fryo", "ishida", "nimco"], {}) is None

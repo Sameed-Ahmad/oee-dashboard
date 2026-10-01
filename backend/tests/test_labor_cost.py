@@ -1,4 +1,4 @@
-from app.labor_cost import compute_labor_cost_summary
+from app.labor_cost import compute_department_labor_cost, compute_labor_cost_summary
 
 
 def test_extruder_has_no_labor_cost_line():
@@ -58,3 +58,23 @@ def test_only_months_with_real_output_are_included():
     months = [m["month"] for m in result["months"]]
     assert "2026-09" not in months
     assert all(m["output"] > 0 for m in result["months"])
+
+
+def test_department_labor_cost_equals_sum_of_jan_through_aug():
+    """The department's own TOTAL row should be read directly -- not
+    re-derived by summing individual product lines, which would miss
+    unmapped lines (e.g. "Packing - Printing") and double-count Coated
+    Peanut/Namak Para's shared line."""
+    packing = compute_department_labor_cost("Packing")
+    assert packing is not None
+    assert packing["firstMonth"] == "2026-01"
+    assert packing["lastMonth"] == "2026-08"
+    assert packing["totalRs"] > 0
+
+    production = compute_department_labor_cost("Production")
+    assert production is not None
+    assert production["totalRs"] > packing["totalRs"]  # Production Dept has more cost-center lines
+
+
+def test_department_labor_cost_unknown_department_returns_none():
+    assert compute_department_labor_cost("Not A Real Department") is None

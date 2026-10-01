@@ -5,6 +5,12 @@ from the day-by-day OEE workbooks parser.py handles, and at a much coarser
 grain (one figure per cost-center line per MONTH, not per day/shift), so
 this is deliberately its own module.
 
+Also exposes compute_output_reconciliation, which reuses this same
+workbook's Output table to compare it against this dashboard's own
+OEE-tracked output -- see that function's docstring for why the two
+numbers are expected to differ (they measure different points in the
+pipeline) rather than being a data-quality bug to fix.
+
 Only Shahi-1 is covered -- the facility this dashboard's 10 products
 belong to (Zain-1/Shahi-III are separate facilities also tracked in the
 same workbook, but out of scope here).
@@ -96,6 +102,16 @@ def _find_table(ws, label: str) -> tuple[int, dict[str, int]] | None:
                 if isinstance(v, str) and MONTH_HEADER_RE.match(v):
                     months[v] = c
             return header_row, months
+    return None
+
+
+def _department_total_row(ws, table_header_row: int, department: str) -> int | None:
+    """Finds `department`'s own TOTAL row within a table (e.g. the
+    "Packing" row itself, already the sum of every one of its cost-center
+    lines) -- distinct from _department_lines, which finds its children."""
+    for r in range(table_header_row + 1, ws.max_row + 1):
+        if ws.cell(row=r, column=1).value == department:
+            return r
     return None
 
 
@@ -196,4 +212,142 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
         "sourceLines": source_lines,
         "shared": slug in SHARED_PRODUCTS,
         "months": months_result,
+    }
+
+
+def compute_output_reconciliation(slug: str, records: list[dict]) -> dict | None:
+    """Compares this dashboard's own OEE-tracked monthly output ("Produced"
+    -- summed from `records`, the same day records every other endpoint
+    uses) against the labor-cost workbook's own Output Input figure for the
+    same source line(s) ("Received").
+
+    These are two independently-maintained numbers for two different
+    points in the pipeline -- machine-counted output vs. the quantity
+    actually received into sellable finished-goods stock -- not the same
+    quantity reported twice, so a gap between them is a genuine yield
+    figure to track, not a data error to reconcile away.
+
+    Uses `actualCounter` (the gross machine count, before quality-based
+    rejection) rather than `stockTransferred` (already net of quality
+    loss) for "Produced" -- Received can only ever be a subset of what was
+    gross-produced, so actualCounter is the correct upper bound to compare
+    against; stockTransferred would already have quality loss baked in,
+    double-counting that loss against Received's own gap.
+
+    Returns None if this product has no source line registered at all (see
+    PRODUCT_SOURCE_LINES) -- same scope as compute_labor_cost_summary."""
+    source_lines = PRODUCT_SOURCE_LINES.get(slug)
+    if not source_lines:
+        return None
+
+    wb = _load_workbook()
+    if wb is None or REPORT_SHEET_NAME not in wb.sheetnames:
+        return None
+    ws = wb[REPORT_SHEET_NAME]
+
+    output_table = _find_table(ws, TABLE_HEADERS["output"])
+    if not output_table:
+        return None
+    output_header_row, output_months = output_table
+
+    department = "Production" if source_lines[0].startswith("Production") else "Packing"
+    output_lines = _department_lines(ws, output_header_row, department)
+
+    unit = ""
+    for line in source_lines:
+        if line in output_lines:
+            unit = ws.cell(row=output_lines[line], column=3).value or ""
+            break
+
+    def sort_key(header: str) -> tuple[int, int]:
+        mon, year = header.split("-")
+        return int(year), MONTH_ABBR.index(mon)
+
+    produced_by_month: dict[str, float] = {}
+    for r in records:
+        month_key = r["date"][:7]
+        produced_by_month[month_key] = produced_by_month.get(month_key, 0.0) + r["actualCounter"]
+
+    months_result = []
+    for header in sorted(output_months, key=sort_key):
+        received = sum(
+            _num(ws.cell(row=output_lines[line], column=output_months[header]).value)
+            for line in source_lines if line in output_lines
+        )
+        if received <= 0:
+            continue  # month not filled in yet on the source workbook
+
+        mon, year = header.split("-")
+        month_idx = MONTH_ABBR.index(mon)
+        month_key = f"{year}-{month_idx + 1:02d}"
+        produced = produced_by_month.get(month_key, 0.0)
+        if produced <= 0:
+            continue  # no OEE-tracked data for this month (yet) -- nothing to compare
+
+        gap = round(produced - received, 1)
+
+        months_result.append({
+            "month": month_key,
+            "monthLabel": f"{MONTH_NAMES[month_idx]} {year}",
+            "outputUnit": unit,
+            "produced": round(produced, 1),
+            "received": round(received, 1),
+            "gap": gap,
+            "gapPct": round(gap / produced * 100, 2),
+        })
+
+    return {
+        "sourceLines": source_lines,
+        "shared": slug in SHARED_PRODUCTS,
+        "months": months_result,
+    }
+
+
+def compute_department_labor_cost(department: str) -> dict | None:
+    """Total Labor Cost (Rs.) for an entire department ("Packing" or
+    "Production"), summed across every month filled in on the source
+    workbook so far. Reads the workbook's own department TOTAL row
+    directly -- already the sum of every cost-center line in that
+    department, including lines with no 1:1 mapping to one of this
+    dashboard's 10 products (e.g. "Packing - Printing") -- rather than
+    summing our own per-product figures, which would double-count Coated
+    Peanut/Namak Para's shared line and miss unmapped lines entirely.
+
+    Returns None if the workbook, this table, or this department's row
+    can't be found, or no month has been filled in yet."""
+    wb = _load_workbook()
+    if wb is None or REPORT_SHEET_NAME not in wb.sheetnames:
+        return None
+    ws = wb[REPORT_SHEET_NAME]
+
+    cost_table = _find_table(ws, TABLE_HEADERS["laborCost"])
+    if not cost_table:
+        return None
+    header_row, months = cost_table
+
+    row = _department_total_row(ws, header_row, department)
+    if row is None:
+        return None
+
+    def sort_key(header: str) -> tuple[int, int]:
+        mon, year = header.split("-")
+        return int(year), MONTH_ABBR.index(mon)
+
+    total = 0.0
+    months_included = []
+    for header in sorted(months, key=sort_key):
+        value = _num(ws.cell(row=row, column=months[header]).value)
+        if value <= 0:
+            continue
+        total += value
+        mon, year = header.split("-")
+        months_included.append(f"{year}-{MONTH_ABBR.index(mon) + 1:02d}")
+
+    if not months_included:
+        return None
+
+    return {
+        "totalRs": round(total, 2),
+        "firstMonth": months_included[0],
+        "lastMonth": months_included[-1],
     }

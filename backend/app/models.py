@@ -148,6 +148,23 @@ class ProductLaborCostSummary(BaseModel):
     months: list[LaborCostMonthEntry]
 
 
+class ReconciliationMonthEntry(BaseModel):
+    month: str  # "2026-01"
+    monthLabel: str  # "January 2026"
+    outputUnit: str  # "Packets" | "KG"
+    produced: float  # OEE-tracked, summed from this dashboard's own day records
+    received: float  # from the labor-cost workbook's Output Input sheet
+    gap: float  # produced - received
+    gapPct: float  # gap as a % of produced
+
+
+class ProductReconciliationSummary(BaseModel):
+    slug: str
+    sourceLines: list[str]
+    shared: bool
+    months: list[ReconciliationMonthEntry]
+
+
 class ProductInfo(BaseModel):
     slug: str
     displayName: str
@@ -219,12 +236,23 @@ class OeeTrendPoint(BaseModel):
     avgOeePct: float
 
 
+class DepartmentCostSummary(BaseModel):
+    totalLaborCostRs: float | None  # None if no labor-cost data found for this department
+    laborCostFirstMonth: str | None  # "2026-01"
+    laborCostLastMonth: str | None  # "2026-08"
+    totalGasCostRs: float | None  # None if none of this department's products have gas data
+    gasCostProducts: list[str]  # which products' gas data contributed (a partial figure, not the dept's full gas bill)
+    gasCostFirstMonth: str | None
+    gasCostLastMonth: str | None
+
+
 class UnitOverviewDepartmentEntry(BaseModel):
     slug: str
     displayName: str
     productCount: int
     summary: DepartmentAvgSummary
     monthlyOee: list[OeeTrendPoint]  # one point per month with data, current year only
+    costs: DepartmentCostSummary
 
 
 class UnitDetail(BaseModel):

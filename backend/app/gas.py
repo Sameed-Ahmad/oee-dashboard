@@ -26,7 +26,7 @@ from pathlib import Path
 
 GAS_READINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "gas_readings.json"
 
-MMBTU_PRICE_RS = 3000
+MMBTU_PRICE_RS = 5000
 
 # Matches the same Packing="Packets"/Production="KG" convention used in
 # labor_cost.py, for the same underlying reason (Pops is Packing Dept,
@@ -91,3 +91,35 @@ def compute_gas_summary(slug: str, records: list[dict]) -> dict | None:
             "gasCostPerUnit": gas_cost_per_unit,
         })
     return {"mmbtuPriceRs": MMBTU_PRICE_RS, "months": months}
+
+
+def compute_total_gas_cost(slugs: list[str], records_by_slug: dict[str, list[dict]]) -> dict | None:
+    """Sums gas cost (Rs., at MMBTU_PRICE_RS) across every product in
+    `slugs` that has gas meter data registered, across every month on
+    record for each. Only a handful of products have gas readings at all
+    (see gas_readings.json) -- this is necessarily a PARTIAL figure (only
+    whatever we happen to meter), not a department's true total gas bill,
+    so callers should label it as such rather than implying completeness.
+
+    Returns None if none of `slugs` have any gas data registered."""
+    total = 0.0
+    contributing: list[str] = []
+    all_months: list[str] = []
+    for slug in slugs:
+        result = compute_gas_summary(slug, records_by_slug.get(slug, []))
+        if result is None or not result["months"]:
+            continue
+        contributing.append(slug)
+        for m in result["months"]:
+            total += m["gasConsumed"] * MMBTU_PRICE_RS
+            all_months.append(m["month"])
+
+    if not contributing:
+        return None
+
+    return {
+        "totalRs": round(total, 2),
+        "products": contributing,
+        "firstMonth": min(all_months),
+        "lastMonth": max(all_months),
+    }

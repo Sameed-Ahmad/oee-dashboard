@@ -23,6 +23,17 @@ const Unit = (() => {
       `${overview.departments.length} department${overview.departments.length === 1 ? "" : "s"} with data in this unit`;
   }
 
+  function formatRs(amount) {
+    return `Rs. ${Math.round(amount).toLocaleString()}`;
+  }
+
+  function monthRangeLabel(first, last) {
+    if (!first) return "";
+    return first === last
+      ? Calendar.monthLabel(first)
+      : `${Calendar.monthNameOnly(first)}–${Calendar.monthLabel(last)}`;
+  }
+
   function renderCards(overview) {
     const container = el("departmentCards");
     container.innerHTML = "";
@@ -32,6 +43,7 @@ const Unit = (() => {
       .sort((a, b) => b.summary.avgOeePct - a.summary.avgOeePct)
       .forEach((d) => {
         const s = d.summary;
+        const c = d.costs;
         const tier = Utils.tierFor(s.avgOeePct);
         const card = document.createElement("a");
         card.className = "product-card";
@@ -43,9 +55,16 @@ const Unit = (() => {
           </div>
           <div class="product-card-oee">${Utils.pct(s.avgOeePct)}</div>
           <div class="product-card-metrics">
-            <div><span>Availability</span><strong>${Utils.pct(s.avgAvailabilityPct)}</strong></div>
-            <div><span>Performance</span><strong>${Utils.pct(s.avgPerformancePct)}</strong></div>
-            <div><span>Quality</span><strong>${Utils.pct(s.avgQualityPct)}</strong></div>
+            <div>
+              <span>Total labor cost</span>
+              <strong>${c.totalLaborCostRs != null ? formatRs(c.totalLaborCostRs) : "—"}</strong>
+              <small>${monthRangeLabel(c.laborCostFirstMonth, c.laborCostLastMonth)}</small>
+            </div>
+            <div>
+              <span>Total gas cost${c.gasCostProducts.length ? ` (${c.gasCostProducts.length} of ${d.productCount} products)` : ""}</span>
+              <strong>${c.totalGasCostRs != null ? formatRs(c.totalGasCostRs) : "Not tracked"}</strong>
+              <small>${monthRangeLabel(c.gasCostFirstMonth, c.gasCostLastMonth)}</small>
+            </div>
           </div>
           <div class="product-card-footer">
             <span>${d.productCount} product${d.productCount === 1 ? "" : "s"}</span>

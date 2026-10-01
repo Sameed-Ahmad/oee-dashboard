@@ -14,6 +14,14 @@ const Product = (() => {
     overview: null,
     gasSummary: null, // null if this product has no gas meter data registered (see backend/data/gas_readings.json)
     laborCostSummary: null, // null if this product has no labor-cost line registered (see backend/app/labor_cost.py)
+    // "Produced vs. received" panel is intentionally pulled from the UI for
+    // now (backend endpoint/computation still exist, see
+    // backend/app/labor_cost.py's compute_output_reconciliation) -- the
+    // premise that Produced should always be >= Received didn't hold up
+    // against real data even after fixing two genuine parser bugs found
+    // while investigating, so it needs verification against the actual
+    // business process (gas/labor-cost mapping, time-boundary conventions)
+    // before it's shown as a trustworthy KPI again.
     allDates: [],
     recordsByDate: {},
     allRecords: [], // sorted ascending by date, day-level (combined) records

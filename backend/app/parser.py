@@ -258,14 +258,44 @@ def corrected_day_availability(ws) -> tuple[int, int, float] | None:
     # must be summed, not deduped by product name.
     all_rows: list[tuple[float, float]] = []
     for planned_run_row, planned_shutdown_row, downtime_raw_row in raw_rows:
-        available_row = max(0, planned_run_row - planned_shutdown_row)
+        available_after_shutdown = max(0, planned_run_row - planned_shutdown_row)
+        # If subtracting shutdown would leave no more room than this row's
+        # own downtime needs (<=, not just <, since an exact match is just
+        # as much a sign of trouble -- e.g. Kuiper's 2026-06-27 logs exactly
+        # 90 minutes of downtime against exactly 90 minutes of available-
+        # after-shutdown, zeroing out a day that genuinely produced 812
+        # units), shutdown and downtime aren't cleanly separable for this
+        # row -- verified against real cells (e.g. HNC 1's 2026-08-31 logs
+        # 300 minutes of "planned shut down" AND 410 minutes of
+        # "Maintenance" downtime against a row with only 690 minutes of
+        # "Planned run Time," which would otherwise zero out a day that
+        # genuinely produced 1,921 units). Subtracting both in sequence
+        # double-penalizes whatever time they actually share; falling back
+        # to the row's own full planned run time as the baseline instead
+        # reproduces the row's own native, correctly-functioning "Run Time"
+        # figure exactly (690 - 410 = 280, matching the sheet's own value).
+        if downtime_raw_row > 0 and available_after_shutdown <= downtime_raw_row:
+            available_row = planned_run_row
+        else:
+            available_row = available_after_shutdown
         if available_row <= 0:
             continue
         downtime_row = min(available_row, downtime_raw_row)
         all_rows.append((available_row, downtime_row))
 
     if not all_rows:
-        return 0, 0, 0.0
+        # every real row's own planned shutdown was >= its planned run time
+        # (a data-entry inconsistency in the source row -- e.g. Kuiper's
+        # 2026-06-05 logs 355 minutes of "planned shut down" against a row
+        # with only 155 minutes of "Planned run Time"), clamping every row
+        # to 0 available minutes even on a day with real recorded output.
+        # Asserting (0, 0, 0.0) here would silently zero out genuine
+        # production (and, further upstream, cause that whole day to be
+        # excluded as a "0% OEE" day everywhere -- see routes.py's
+        # _is_real_day). Deferring to the sheet's own native anchor values
+        # instead, same as any other case this function can't confidently
+        # correct.
+        return None
 
     total_available = sum(avail for avail, _ in all_rows)
     availability_pct = sum(avail - dt for avail, dt in all_rows) / total_available * 100
@@ -552,13 +582,24 @@ Every row's own `run_time`/Availability % is computed as baseline -
         # department-aware handling.
         planned_run_time_row = _num(ws.cell(row=r, column=cols["planned_run_time"]).value)
         planned_shutdown_row = _num(ws.cell(row=r, column=cols["planned_shutdown"]).value)
-        available_after_shutdown_row = (
-            max(0, planned_run_time_row - planned_shutdown_row) if quality_tracked else planned_run_time_row
-        )
+        downtime_total_row = sum(downtime.values())
+        if quality_tracked:
+            available_after_shutdown_row = max(0, planned_run_time_row - planned_shutdown_row)
+            # Same fallback as corrected_day_availability: if shutdown and
+            # downtime aren't cleanly separable for this row (shutdown
+            # alone would leave less room than the row's own downtime
+            # needs), subtracting both double-penalizes whatever time they
+            # actually share -- fall back to the row's own full planned run
+            # time as the baseline instead of zeroing out a row that may
+            # have genuinely produced real output.
+            if downtime_total_row > 0 and available_after_shutdown_row <= downtime_total_row:
+                available_after_shutdown_row = planned_run_time_row
+        else:
+            available_after_shutdown_row = planned_run_time_row
         # Clamped at 0: a few real rows compute a negative figure (e.g. a
         # changeover logged against a product that was never scheduled that
         # shift) -- not a meaningful quantity to carry into a displayed total.
-        run_time = int(round(max(0, available_after_shutdown_row - sum(downtime.values()))))
+        run_time = int(round(max(0, available_after_shutdown_row - downtime_total_row)))
         availability_pct_row = (
             round(run_time / available_after_shutdown_row * 100, 2) if available_after_shutdown_row else 0.0
         )

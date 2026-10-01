@@ -8,12 +8,13 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from ..cache import compute_summary, load_cache, save_cache
-from ..gas import compute_gas_summary
-from ..labor_cost import compute_labor_cost_summary
+from ..gas import compute_gas_summary, compute_total_gas_cost
+from ..labor_cost import compute_department_labor_cost, compute_labor_cost_summary, compute_output_reconciliation
 from ..models import (
     CompanyOrgInfo,
     DayRecord,
     DepartmentAvgSummary,
+    DepartmentCostSummary,
     DepartmentDetail,
     DepartmentOrgInfo,
     DepartmentOverview,
@@ -26,7 +27,9 @@ from ..models import (
     ProductLaborCostSummary,
     ProductMachines,
     ProductOrgInfo,
+    ProductReconciliationSummary,
     ProductSummary,
+    ReconciliationMonthEntry,
     SlugName,
     SubEnterpriseOrgInfo,
     UnitDetail,
@@ -237,6 +240,27 @@ def get_product_labor_cost(slug: str):
     )
 
 
+@router.get("/products/{slug}/reconciliation", response_model=ProductReconciliationSummary)
+def get_product_reconciliation(slug: str):
+    """Produced (this dashboard's own OEE-tracked output) vs. Received (the
+    labor-cost workbook's Output Input figure), month by month -- see
+    labor_cost.compute_output_reconciliation for why these two numbers are
+    expected to differ. Same product scope as /labor-cost. 404 means no
+    reconciliation panel for this product, not an error."""
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    records = _get_records(slug)
+    result = compute_output_reconciliation(slug, records)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"no reconciliation data registered for '{slug}'")
+    return ProductReconciliationSummary(
+        slug=slug,
+        sourceLines=result["sourceLines"],
+        shared=result["shared"],
+        months=[ReconciliationMonthEntry(**m) for m in result["months"]],
+    )
+
+
 @router.post("/products/{slug}/refresh", response_model=ProductSummary)
 def refresh_product(slug: str):
     if slug not in PRODUCTS:
@@ -363,6 +387,34 @@ def _department_oee_trend(dept_slug: str, bucket_key) -> list[OeeTrendPoint]:
     ]
 
 
+def _department_cost_summary(dept) -> DepartmentCostSummary:
+    """Total Labor Cost and total (partial) Gas Cost for a department, for
+    the Shahi 1 unit cards -- see compute_department_labor_cost and
+    compute_total_gas_cost for why these are computed the way they are
+    (workbook's own department-total row for labor; sum of whichever
+    products happen to have gas meter data for gas, not a full gas bill).
+    The workbook's own department row label is just the display name
+    without " Dept" ("Packing Dept" -> "Packing"), matching its own
+    spelling exactly.
+    """
+    workbook_label = dept.display_name.replace(" Dept", "")
+    labor = compute_department_labor_cost(workbook_label)
+
+    product_slugs = [p.slug for p in products_in_department(dept.slug)]
+    records_by_slug = {slug: _get_records(slug) for slug in product_slugs}
+    gas = compute_total_gas_cost(product_slugs, records_by_slug)
+
+    return DepartmentCostSummary(
+        totalLaborCostRs=labor["totalRs"] if labor else None,
+        laborCostFirstMonth=labor["firstMonth"] if labor else None,
+        laborCostLastMonth=labor["lastMonth"] if labor else None,
+        totalGasCostRs=gas["totalRs"] if gas else None,
+        gasCostProducts=gas["products"] if gas else [],
+        gasCostFirstMonth=gas["firstMonth"] if gas else None,
+        gasCostLastMonth=gas["lastMonth"] if gas else None,
+    )
+
+
 @router.get("/units/{unit_slug}/overview", response_model=UnitOverview)
 def get_unit_overview(unit_slug: str):
     unit = get_unit(unit_slug)
@@ -382,6 +434,7 @@ def get_unit_overview(unit_slug: str):
             productCount=len(summaries),
             summary=_avg_department_summary(summaries),
             monthlyOee=_department_oee_trend(dept.slug, lambda d: d[:7]),
+            costs=_department_cost_summary(dept),
         ))
 
     return UnitOverview(
