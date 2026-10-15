@@ -41,6 +41,7 @@ const Api = (() => {
     getGasSummary: (slug) => getOptional(`/products/${slug}/gas`),
     getLaborCostSummary: (slug) => getOptional(`/products/${slug}/labor-cost`),
     getReconciliationSummary: (slug) => getOptional(`/products/${slug}/reconciliation`),
+    getFgReconciliation: (slug) => getOptional(`/products/${slug}/fg-reconciliation`),
     refresh: (slug) => post(`/products/${slug}/refresh`),
     // Full org chart -- not consumed by the frontend yet (only
     // shahi-1-packing has data), but real and correct. This is where a
@@ -49,6 +50,7 @@ const Api = (() => {
     getDepartment: (slug) => get(`/departments/${slug}`),
     getDepartmentOverview: (slug) => get(`/departments/${slug}/overview`),
     getUnitOverview: (slug) => get(`/units/${slug}/overview`),
+    getElectricity: (slug) => getOptional(`/units/${slug}/electricity`),
     getMachines: (slug) => get(`/products/${slug}/machines`),
   };
 })();

@@ -137,8 +137,8 @@ class LaborCostMonthEntry(BaseModel):
     laborCost: float
     output: float
     outputUnit: str  # "Packets" | "KG"
-    costPerUnit: float
-    manHoursPerUnit: float
+    costPerThousandUnits: float  # Rs. per 1,000 units of output (more readable than the raw per-unit fraction)
+    manHoursPerThousandUnits: float
 
 
 class ProductLaborCostSummary(BaseModel):
@@ -163,6 +163,62 @@ class ProductReconciliationSummary(BaseModel):
     sourceLines: list[str]
     shared: bool
     months: list[ReconciliationMonthEntry]
+
+
+class FgReconciliationDayEntry(BaseModel):
+    date: str  # "2026-07-31"
+    produced: float  # OEE-tracked stockTransferred for this day
+    received: float  # finished-goods warehouse receipts for this day (see finished_goods.py)
+    gap: float  # produced - received
+    gapPct: float  # gap as a % of produced
+    flagged: bool  # produced exceeded received by more than flagThresholdPct
+
+
+class FgReconciliationMonthEntry(BaseModel):
+    month: str  # "2026-07"
+    monthLabel: str  # "July 2026"
+    produced: float
+    received: float
+    gap: float
+    gapPct: float
+    flagged: bool  # this month's own total: produced exceeded received by more than flagThresholdPct
+    days: list[FgReconciliationDayEntry]
+
+
+class ProductFgReconciliationSummary(BaseModel):
+    slug: str
+    flagThresholdPct: float
+    produced: float  # overall total across every month shown
+    received: float
+    gap: float
+    gapPct: float
+    flagged: bool  # same shortfall-only rule as a day, applied to the overall total
+    months: list[FgReconciliationMonthEntry]
+
+
+class ElectricitySourceEntry(BaseModel):
+    name: str  # "Gas Generator" | "Diesel Generator" | "K-Electric" | "Solar"
+    units: float | None  # None for a month this source has no reading at all
+    billRs: float | None  # None for Solar (free/self-generated, no bill)
+    unitCost: float | None
+
+
+class ElectricityMonthEntry(BaseModel):
+    month: str  # "2026-01"
+    monthLabel: str  # "January 2026"
+    unitsConsumed: float  # Shahi-1's own share (see electricity.py)
+    costRs: float  # derived: unitsConsumed x that month's blended unit cost
+    sharePct: float | None  # Shahi-1's % of the combined Zain-1/Shahi-1 facility total that month
+    facilityTotalUnits: float | None  # combined Zain-1 + Shahi-1 total, for context
+    facilityTotalCostRs: float | None
+    facilityAvgUnitCost: float  # blended Rs./unit across all 4 sources (including solar)
+    sources: list[ElectricitySourceEntry]  # facility-wide (Zain-1 + Shahi-1 combined) per-source breakdown
+    packingOutputUnits: float | None  # Packing Dept's own OEE-tracked output that month (Packets); None if no records that month
+    productionOutputUnits: float | None  # Production Dept's own OEE-tracked output that month (KG); None if no records that month
+
+
+class ElectricitySummary(BaseModel):
+    months: list[ElectricityMonthEntry]
 
 
 class ProductInfo(BaseModel):
@@ -217,6 +273,7 @@ class DepartmentProductEntry(BaseModel):
     slug: str
     displayName: str
     summary: ProductSummary
+    fgGapFlagged: bool | None = None  # overall Produced-vs-Received gap over threshold; None if not tracked for this product
 
 
 class DepartmentOverview(BaseModel):
@@ -231,19 +288,19 @@ class DepartmentAvgSummary(BaseModel):
     avgOeePct: float
 
 
-class OeeTrendPoint(BaseModel):
-    label: str  # "2026-01" for a monthly point
-    avgOeePct: float
+class DepartmentGasCostGroup(BaseModel):
+    outputUnit: str  # "Packets" | "KG"
+    costPerThousandUnits: float  # avg across this unit's contributing products
+    products: list[str]  # which products contributed to this group's average
 
 
 class DepartmentCostSummary(BaseModel):
     totalLaborCostRs: float | None  # None if no labor-cost data found for this department
     laborCostFirstMonth: str | None  # "2026-01"
     laborCostLastMonth: str | None  # "2026-08"
-    totalGasCostRs: float | None  # None if none of this department's products have gas data
-    gasCostProducts: list[str]  # which products' gas data contributed (a partial figure, not the dept's full gas bill)
-    gasCostFirstMonth: str | None
-    gasCostLastMonth: str | None
+    laborCostPerThousandUnits: float | None  # output-weighted, from the workbook's own department totals
+    laborCostOutputUnit: str | None  # "Packets" | "KG"
+    gasCostGroups: list[DepartmentGasCostGroup]  # one per distinct output unit among gas-tracked products; empty if none
 
 
 class UnitOverviewDepartmentEntry(BaseModel):
@@ -251,7 +308,6 @@ class UnitOverviewDepartmentEntry(BaseModel):
     displayName: str
     productCount: int
     summary: DepartmentAvgSummary
-    monthlyOee: list[OeeTrendPoint]  # one point per month with data, current year only
     costs: DepartmentCostSummary
 
 

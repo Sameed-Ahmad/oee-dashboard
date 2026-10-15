@@ -36,10 +36,11 @@
 
     <div class="product-cards" id="departmentCards"></div>
 
-    <section class="panel dept-panel">
-      <h2>Monthly OEE trend by department</h2>
-      <div class="panel-sub">Current year only — dashed line marks the 85% world-class benchmark</div>
-      <div class="chart-wrap"><canvas id="monthlyDeptChart"></canvas></div>
+    <section class="panel gas-section" id="electricitySection" style="display:none">
+      <h2>Electricity cost</h2>
+      <div class="panel-sub">Shahi 1's own monthly units and cost, with Packing &amp; Production output in the table below -- click a month row to see the source-by-source breakdown.</div>
+      <div class="chart-wrap"><canvas id="electricityChart"></canvas></div>
+      <table class="data-table" id="electricityTable"></table>
     </section>
   </div>
 
@@ -157,18 +158,6 @@
       </section>
     </div>
 
-    <section class="trend-section">
-      <div class="trend-header">
-        <h2 id="trendHeading">OEE &middot; Availability &middot; Performance over time</h2>
-        <div class="trend-toggle" id="trendToggle">
-          <button type="button" data-range="recent" class="active">Recent (60 days)</button>
-          <button type="button" data-range="full">Full range (weekly avg)</button>
-        </div>
-      </div>
-      <div class="panel-sub" id="trendPanelSub" style="display:none"></div>
-      <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
-    </section>
-
     <section class="panel gas-section" id="gasSection" style="display:none">
       <h2>Gas consumption vs. production</h2>
       <div class="panel-sub">Monthly gas meter readings against units produced that month</div>
@@ -183,6 +172,12 @@
       <div class="chart-wrap"><canvas id="laborCostChart"></canvas></div>
       <table class="data-table" id="laborCostTable"></table>
       <p class="reliability-empty" id="laborCostSharedNote" style="display:none"></p>
+    </section>
+
+    <section class="panel gas-section" id="fgReconciliationSection" style="display:none">
+      <h2>Produced vs. Received</h2>
+      <div class="panel-sub" id="fgReconciliationPanelSub">Monthly OEE output against finished-goods warehouse receipts -- click a month to see its days</div>
+      <table class="data-table" id="fgReconciliationTable"></table>
     </section>
 
   </div>
@@ -236,6 +231,24 @@
     <button class="modal-close" id="loadsheddingModalClose" type="button" aria-label="Close">&times;</button>
     <h3>External stoppages — Loadshedding (tracked separately, not counted in MTBF/MTTR)</h3>
     <table class="data-table" id="reliabilityLoadsheddingTable"></table>
+  </div>
+</div>
+
+<!-- Produced vs. Received day drill-down (opened from the Produced vs. Received monthly table, product page only) -->
+<div class="modal-overlay" id="fgMonthModalOverlay">
+  <div class="modal-box reliability-modal-box">
+    <button class="modal-close" id="fgMonthModalClose" type="button" aria-label="Close">&times;</button>
+    <h3 id="fgMonthModalTitle">Produced vs. Received</h3>
+    <table class="data-table" id="fgMonthModalTable"></table>
+  </div>
+</div>
+
+<!-- Electricity source-by-source drill-down (opened from the Electricity table, unit page only) -->
+<div class="modal-overlay" id="electricityMonthModalOverlay">
+  <div class="modal-box reliability-modal-box">
+    <button class="modal-close" id="electricityMonthModalClose" type="button" aria-label="Close">&times;</button>
+    <h3 id="electricityMonthModalTitle">Electricity -- source breakdown</h3>
+    <table class="data-table" id="electricityMonthModalTable"></table>
   </div>
 </div>
 

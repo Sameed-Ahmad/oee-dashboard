@@ -54,13 +54,14 @@ const Department = (() => {
         const s = p.summary;
         const tier = Utils.tierFor(s.avgOeePct);
         const card = document.createElement("a");
-        card.className = "product-card";
+        card.className = "product-card" + (p.fgGapFlagged ? " gap-flagged" : "");
         card.href = `#/product/${p.slug}`;
         card.innerHTML = `
           <div class="product-card-top">
             <h3>${p.displayName}</h3>
             <span class="tier-tag ${tier.cls}">${tier.label}</span>
           </div>
+          ${p.fgGapFlagged ? `<span class="gap-flag-badge">Produced vs. Received gap &gt;2%</span>` : ""}
           <div class="product-card-oee">${Utils.pct(s.avgOeePct)}</div>
           <div class="product-card-metrics">
             <div><span>Availability</span><strong>${Utils.pct(s.avgAvailabilityPct)}</strong></div>

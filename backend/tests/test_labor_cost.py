@@ -1,8 +1,18 @@
 from app.labor_cost import compute_department_labor_cost, compute_labor_cost_summary
 
 
-def test_extruder_has_no_labor_cost_line():
-    assert compute_labor_cost_summary("extruder") is None
+def test_extruder_source_line_is_filed_under_production_pops():
+    """Extruder's cost-center line in the workbook is named "Production -
+    Pops" (it's Pops' upstream production-stage machine, not a separate
+    product), not anything literally named "Extruder" -- confirmed by its
+    KG output figures tracking Extruder's own OEE-tracked output closely."""
+    result = compute_labor_cost_summary("extruder")
+    assert result is not None
+    assert result["sourceLines"] == ["Production - Pops"]
+    assert result["shared"] is False
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["outputUnit"] == "KG"
+    assert jan["output"] == 40585.5
 
 
 def test_fryo_january_matches_source_workbook():
@@ -17,8 +27,8 @@ def test_fryo_january_matches_source_workbook():
     assert jan["output"] == 5440392
     assert jan["laborCost"] == 312600
     assert jan["manHours"] == 1889.1
-    assert jan["costPerUnit"] == 0.0575
-    assert abs(jan["laborCost"] / jan["output"] - jan["costPerUnit"]) < 0.001
+    assert jan["costPerThousandUnits"] == 57.46
+    assert abs(jan["laborCost"] / jan["output"] * 1000 - jan["costPerThousandUnits"]) < 0.01
 
 
 def test_nimco_sums_both_source_lines():
@@ -34,7 +44,7 @@ def test_nimco_sums_both_source_lines():
     # R-10: output=8972964, cost=631425; R-20/R-30: output=3422364, cost=909462
     assert jan["output"] == 8972964 + 3422364
     assert jan["laborCost"] == 631425 + 909462
-    assert jan["costPerUnit"] == round((631425 + 909462) / (8972964 + 3422364), 4)
+    assert jan["costPerThousandUnits"] == round((631425 + 909462) / (8972964 + 3422364) * 1000, 2)
 
 
 def test_coated_peanut_and_namak_para_share_identical_blended_figure():
@@ -74,6 +84,25 @@ def test_department_labor_cost_equals_sum_of_jan_through_aug():
     production = compute_department_labor_cost("Production")
     assert production is not None
     assert production["totalRs"] > packing["totalRs"]  # Production Dept has more cost-center lines
+
+
+def test_department_labor_cost_per_thousand_units_is_output_weighted():
+    """costPerThousandUnits must come from summed totals (total Rs. /
+    total output), not an average of each month's own ratio -- otherwise
+    a low-volume month's ratio would count equally with a high-volume
+    month's, skewing the result."""
+    packing = compute_department_labor_cost("Packing")
+    assert packing["outputUnit"] == "Packets"
+    assert packing["costPerThousandUnits"] > 0
+
+    production = compute_department_labor_cost("Production")
+    assert production["outputUnit"] == "KG"
+    assert production["costPerThousandUnits"] > 0
+
+    # KG is a far smaller physical unit than a packet, so Production's
+    # Rs./1,000-units figure should be an order of magnitude bigger than
+    # Packing's -- a sanity check against a unit mix-up.
+    assert production["costPerThousandUnits"] > packing["costPerThousandUnits"] * 10
 
 
 def test_department_labor_cost_unknown_department_returns_none():

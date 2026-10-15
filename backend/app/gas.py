@@ -1,6 +1,6 @@
 """Gas meter consumption vs. production, for the handful of products with
-manually-entered gas meter readings (backend/data/gas_readings.json --
-currently HNC 1, HNC 3, Pops). There's no per-day meter reading, only a
+manually-entered gas meter readings (backend/data/utility/gas_readings.json --
+currently HNC 1, HNC 3, Extruder). There's no per-day meter reading, only a
 start/end reading for each month, so this is inherently a MONTHLY figure,
 not a day-level one: gas consumed that month is the delta between the two
 readings (in MMBTU -- the unit the meters themselves are read in), and
@@ -18,23 +18,31 @@ tariffs vary widely by consumer category (captive power vs. process, and
 by province), so there's no single "the" industrial gas price to assume.
 Update this constant if the billed rate changes; the UI surfaces its
 current value directly from here so it's never a hidden assumption.
+
+This meter was originally filed under "pops" -- corrected per the person
+running this dashboard: the physical meter sits on the Extruder machine
+(Pops' upstream production line), not the Pops packing line itself, so
+its readings must be compared against Extruder's own output, not Pops'.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-GAS_READINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "gas_readings.json"
+GAS_READINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "utility" / "gas_readings.json"
 
 MMBTU_PRICE_RS = 5000
 
-# Matches the same Packing="Packets"/Production="KG" convention used in
-# labor_cost.py, for the same underlying reason (Pops is Packing Dept,
-# HNC 1/HNC 3 are Production Dept).
+# Matches the Packing="Packets"/Production="KG" convention used in
+# labor_cost.py -- Extruder, despite packing Pops-brand snack items (see
+# module docstring), is tracked in KG like the rest of Production Dept:
+# confirmed against its own labor-cost workbook line ("Production -
+# Pops", see labor_cost.py's PRODUCT_SOURCE_LINES), whose KG figures
+# track Extruder's OEE-tracked output almost exactly.
 PRODUCT_OUTPUT_UNIT = {
     "hnc-1": "KG",
     "hnc-3": "KG",
-    "pops": "Packets",
+    "extruder": "KG",
 }
 
 _MONTH_NAMES = [
@@ -93,33 +101,45 @@ def compute_gas_summary(slug: str, records: list[dict]) -> dict | None:
     return {"mmbtuPriceRs": MMBTU_PRICE_RS, "months": months}
 
 
-def compute_total_gas_cost(slugs: list[str], records_by_slug: dict[str, list[dict]]) -> dict | None:
-    """Sums gas cost (Rs., at MMBTU_PRICE_RS) across every product in
-    `slugs` that has gas meter data registered, across every month on
-    record for each. Only a handful of products have gas readings at all
-    (see gas_readings.json) -- this is necessarily a PARTIAL figure (only
-    whatever we happen to meter), not a department's true total gas bill,
-    so callers should label it as such rather than implying completeness.
+def compute_department_gas_cost_per_thousand_units(
+    slugs: list[str], records_by_slug: dict[str, list[dict]]
+) -> list[dict]:
+    """Average Gas Cost per 1,000 units produced, across whichever products
+    in `slugs` have gas meter data registered -- same avg-of-averages
+    methodology routes._avg_department_summary uses for the department's
+    OEE/Availability/etc. averages: each product's own average
+    gasCostPerUnit (across its own months) is scaled to a per-1,000
+    figure, then those per-product figures are averaged again, unweighted,
+    within their own output unit.
 
-    Returns None if none of `slugs` have any gas data registered."""
-    total = 0.0
-    contributing: list[str] = []
-    all_months: list[str] = []
+    Returns ONE entry per distinct output unit among the contributing
+    products, not a single blended figure -- Shahi 1's Production Dept
+    mixes KG-metered (HNC 1/3) and Packets-metered (Extruder) products, and
+    averaging "Rs. per 1,000 KG" together with "Rs. per 1,000 Packets"
+    would be meaningless (different physical quantities), so each unit
+    gets its own line instead. Only a handful of products have gas
+    readings at all (see gas_readings.json) -- this reflects only
+    whichever of them happen to be in `slugs`, not every cost driver in
+    the department.
+
+    Returns an empty list if none of `slugs` have any gas data
+    registered."""
+    per_unit_avgs: dict[str, list[float]] = {}
+    per_unit_products: dict[str, list[str]] = {}
     for slug in slugs:
         result = compute_gas_summary(slug, records_by_slug.get(slug, []))
         if result is None or not result["months"]:
             continue
-        contributing.append(slug)
-        for m in result["months"]:
-            total += m["gasConsumed"] * MMBTU_PRICE_RS
-            all_months.append(m["month"])
+        unit = result["months"][0]["outputUnit"]
+        avg_cost_per_unit = sum(m["gasCostPerUnit"] for m in result["months"]) / len(result["months"])
+        per_unit_avgs.setdefault(unit, []).append(avg_cost_per_unit * 1000)
+        per_unit_products.setdefault(unit, []).append(slug)
 
-    if not contributing:
-        return None
-
-    return {
-        "totalRs": round(total, 2),
-        "products": contributing,
-        "firstMonth": min(all_months),
-        "lastMonth": max(all_months),
-    }
+    return [
+        {
+            "outputUnit": unit,
+            "costPerThousandUnits": round(sum(values) / len(values), 2),
+            "products": per_unit_products[unit],
+        }
+        for unit, values in sorted(per_unit_avgs.items())
+    ]

@@ -8,7 +8,9 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from ..cache import compute_summary, load_cache, save_cache
-from ..gas import compute_gas_summary, compute_total_gas_cost
+from ..electricity import compute_electricity_summary
+from ..finished_goods import compute_fg_reconciliation
+from ..gas import compute_department_gas_cost_per_thousand_units, compute_gas_summary
 from ..labor_cost import compute_department_labor_cost, compute_labor_cost_summary, compute_output_reconciliation
 from ..models import (
     CompanyOrgInfo,
@@ -16,12 +18,18 @@ from ..models import (
     DepartmentAvgSummary,
     DepartmentCostSummary,
     DepartmentDetail,
+    DepartmentGasCostGroup,
     DepartmentOrgInfo,
     DepartmentOverview,
     DepartmentProductEntry,
+    ElectricityMonthEntry,
+    ElectricitySourceEntry,
+    ElectricitySummary,
+    FgReconciliationDayEntry,
+    FgReconciliationMonthEntry,
     GasMonthEntry,
     LaborCostMonthEntry,
-    OeeTrendPoint,
+    ProductFgReconciliationSummary,
     ProductGasSummary,
     ProductInfo,
     ProductLaborCostSummary,
@@ -59,6 +67,63 @@ router = APIRouter(prefix="/api")
 _records_by_slug: dict[str, list[dict]] = {}
 _warnings_by_slug: dict[str, list[str]] = {}
 _groups_by_slug: dict[str, dict[str, list[dict]]] = {}
+
+
+def _apply_fresh_data(slug: str, records: list[dict], warnings: list[str], groups: dict[str, list[dict]]) -> None:
+    """Pushes freshly-parsed data into the in-memory cache -- shared by
+    _rebuild_one's callers so a product already loaded into memory (e.g.
+    by an earlier request) picks up a later rebuild immediately, rather
+    than staying locked to whatever was in memory at first load until the
+    process restarts."""
+    _records_by_slug[slug] = records
+    _warnings_by_slug[slug] = warnings
+    _groups_by_slug[slug] = groups
+
+
+def _rebuild_one(config):
+    """Parses `config`'s workbook fresh and, if it produced any records,
+    writes the on-disk cache and updates the in-memory cache to match.
+    Returns the parser's own result either way -- callers decide how to
+    treat a 0-record result (the manual /refresh endpoint surfaces it as
+    an HTTP error; the startup background sweep just logs and keeps
+    whatever was already cached for that product)."""
+    result = parse_workbook(config)
+    if result.records:
+        groups = result.groups or {}
+        save_cache(config.slug, result.records, result.errors, groups)
+        _apply_fresh_data(config.slug, result.records, result.errors, groups)
+    return result
+
+
+def rebuild_all_products_in_background() -> None:
+    """Re-parses every product's raw workbook fresh, one at a time, each
+    becoming visible (on disk AND in memory, via _rebuild_one) the moment
+    ITS OWN parse finishes -- not all-or-nothing at the end. Intended to
+    run on a background thread kicked off from main.py's lifespan at app
+    startup, rather than blocking server startup on it: a full sweep
+    across every product takes tens of seconds (the largest single
+    workbook alone can take ~18s to parse), far past what's reasonable to
+    make every launch wait on, so the server starts answering requests
+    immediately with whatever cache already exists and each product
+    silently upgrades to the fresh version as its own parse completes.
+
+    A product whose workbook can't be read right now (e.g. open/locked in
+    Excel, or a genuine parse failure) keeps serving its existing cache
+    rather than crashing this sweep or being left with no data -- it
+    picks up the fresh version on a later restart/refresh once that's
+    resolved."""
+    for config in PRODUCTS.values():
+        if config.excel_dir is None:
+            continue
+        try:
+            result = _rebuild_one(config)
+        except Exception:
+            logger.exception("background startup rebuild failed for '%s' -- keeping existing cache", config.slug)
+            continue
+        if not result.records:
+            logger.warning("background startup rebuild for '%s' produced 0 records -- keeping existing cache", config.slug)
+            continue
+        logger.info("background startup rebuild done for '%s': %d records", config.slug, len(result.records))
 
 
 def _load(slug: str) -> tuple[list[dict], list[str], dict[str, list[dict]]]:
@@ -223,10 +288,9 @@ def get_product_gas(slug: str):
 @router.get("/products/{slug}/labor-cost", response_model=ProductLaborCostSummary)
 def get_product_labor_cost(slug: str):
     """Labor cost per unit of output (packets/KG), month by month -- only
-    registered for the 9 products with an identifiable cost-center line in
-    the separate Labor Cost Analysis workbook (see labor_cost.py; Extruder
-    has none). 404 means no labor-cost panel for this product, not an
-    error."""
+    registered for products with an identifiable cost-center line in the
+    separate Labor Cost Analysis workbook (see labor_cost.py). 404 means
+    no labor-cost panel for this product, not an error."""
     if slug not in PRODUCTS:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
     result = compute_labor_cost_summary(slug)
@@ -261,6 +325,35 @@ def get_product_reconciliation(slug: str):
     )
 
 
+@router.get("/products/{slug}/fg-reconciliation", response_model=ProductFgReconciliationSummary)
+def get_product_fg_reconciliation(slug: str):
+    """Produced (this dashboard's own OEE-tracked stockTransferred) vs.
+    Received (finished-goods warehouse receipts -- see
+    finished_goods.py), rolled up by month with each month's own days
+    nested for drill-down, for the 4 Packing Dept products this data
+    source covers (Fry-O, Ishida, Pops, Nimco). 404 means no
+    finished-goods data registered for this product, not an error."""
+    if slug not in PRODUCTS:
+        raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+    records = _get_records(slug)
+    result = compute_fg_reconciliation(slug, records)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"no finished-goods data registered for '{slug}'")
+    return ProductFgReconciliationSummary(
+        slug=slug,
+        flagThresholdPct=result["flagThresholdPct"],
+        produced=result["produced"],
+        received=result["received"],
+        gap=result["gap"],
+        gapPct=result["gapPct"],
+        flagged=result["flagged"],
+        months=[
+            FgReconciliationMonthEntry(**{**m, "days": [FgReconciliationDayEntry(**d) for d in m["days"]]})
+            for m in result["months"]
+        ],
+    )
+
+
 @router.post("/products/{slug}/refresh", response_model=ProductSummary)
 def refresh_product(slug: str):
     if slug not in PRODUCTS:
@@ -269,18 +362,12 @@ def refresh_product(slug: str):
     if config.excel_dir is None:
         raise HTTPException(status_code=404, detail=f"no data source registered for '{slug}' yet")
 
-    result = parse_workbook(config)
+    result = _rebuild_one(config)
     if not result.records:
         raise HTTPException(
             status_code=422,
             detail=f"refresh produced 0 records for '{slug}': {result.errors}",
         )
-
-    groups = result.groups or {}
-    save_cache(slug, result.records, result.errors, groups)
-    _records_by_slug[slug] = result.records
-    _warnings_by_slug[slug] = result.errors
-    _groups_by_slug[slug] = groups
 
     # Current-year-only, consistent with every other endpoint (_get_records)
     # -- distinct from the check above, which only guards against a genuine
@@ -331,7 +418,13 @@ def get_department_overview(dept_slug: str):
         records = _get_records(p.slug)
         _, warnings, _ = _load(p.slug)
         summary = compute_summary(p, records, warnings)
-        entries.append(DepartmentProductEntry(slug=p.slug, displayName=p.display_name, summary=summary))
+        fg_reconciliation = compute_fg_reconciliation(p.slug, records)
+        entries.append(DepartmentProductEntry(
+            slug=p.slug,
+            displayName=p.display_name,
+            summary=summary,
+            fgGapFlagged=fg_reconciliation["flagged"] if fg_reconciliation is not None else None,
+        ))
 
     return DepartmentOverview(department=dept_detail, products=entries)
 
@@ -361,58 +454,43 @@ def _department_summaries(dept_slug: str) -> list[ProductSummary]:
     return summaries
 
 
-def _department_oee_trend(dept_slug: str, bucket_key) -> list[OeeTrendPoint]:
-    """One point per bucket (as returned by bucket_key(date_iso), e.g.
-    "2026-01" for a month or "2026" for a year) -- current-year-only,
-    already enforced by _get_records. Each point's value is this
-    department's avg-of-each-product's-own-average OEE % for that bucket
-    (same avg-of-averages methodology as _avg_department_summary, just
-    computed per bucket instead of over the whole range at once)."""
-    by_bucket: dict[str, list[float]] = {}
-    for p in products_in_department(dept_slug):
-        if not product_has_data(p.slug):
-            continue
-        records = _get_records(p.slug)
-        if not records:
-            continue
-        product_by_bucket: dict[str, list[float]] = {}
-        for r in records:
-            product_by_bucket.setdefault(bucket_key(r["date"]), []).append(r["oeePct"])
-        for bucket, oee_values in product_by_bucket.items():
-            by_bucket.setdefault(bucket, []).append(sum(oee_values) / len(oee_values))
-
-    return [
-        OeeTrendPoint(label=bucket, avgOeePct=round(sum(values) / len(values), 2))
-        for bucket, values in sorted(by_bucket.items())
-    ]
-
-
 def _department_cost_summary(dept) -> DepartmentCostSummary:
-    """Total Labor Cost and total (partial) Gas Cost for a department, for
-    the Shahi 1 unit cards -- see compute_department_labor_cost and
-    compute_total_gas_cost for why these are computed the way they are
-    (workbook's own department-total row for labor; sum of whichever
-    products happen to have gas meter data for gas, not a full gas bill).
-    The workbook's own department row label is just the display name
-    without " Dept" ("Packing Dept" -> "Packing"), matching its own
-    spelling exactly.
+    """Total Labor Cost and average Gas Cost per 1,000 units (one group per
+    output unit, see compute_department_gas_cost_per_thousand_units) for a
+    department, for the Shahi 1 unit cards. The workbook's own department
+    row label is just the display name without " Dept" ("Packing Dept" ->
+    "Packing"), matching its own spelling exactly.
     """
     workbook_label = dept.display_name.replace(" Dept", "")
     labor = compute_department_labor_cost(workbook_label)
 
     product_slugs = [p.slug for p in products_in_department(dept.slug)]
     records_by_slug = {slug: _get_records(slug) for slug in product_slugs}
-    gas = compute_total_gas_cost(product_slugs, records_by_slug)
+    gas_groups = compute_department_gas_cost_per_thousand_units(product_slugs, records_by_slug)
 
     return DepartmentCostSummary(
         totalLaborCostRs=labor["totalRs"] if labor else None,
         laborCostFirstMonth=labor["firstMonth"] if labor else None,
         laborCostLastMonth=labor["lastMonth"] if labor else None,
-        totalGasCostRs=gas["totalRs"] if gas else None,
-        gasCostProducts=gas["products"] if gas else [],
-        gasCostFirstMonth=gas["firstMonth"] if gas else None,
-        gasCostLastMonth=gas["lastMonth"] if gas else None,
+        laborCostPerThousandUnits=labor["costPerThousandUnits"] if labor else None,
+        laborCostOutputUnit=labor["outputUnit"] if labor else None,
+        gasCostGroups=[DepartmentGasCostGroup(**g) for g in gas_groups],
     )
+
+
+def _department_monthly_output(dept_slug: str) -> dict[str, float]:
+    """month ("2026-01") -> summed OEE-tracked stockTransferred across
+    every product in this department, current-year only (same scope as
+    every other endpoint, via _get_records) -- used to plot the
+    Electricity chart's production-trend lines against the same months."""
+    totals: dict[str, float] = {}
+    for p in products_in_department(dept_slug):
+        if not product_has_data(p.slug):
+            continue
+        for r in _get_records(p.slug):
+            month = r["date"][:7]
+            totals[month] = totals.get(month, 0.0) + r["stockTransferred"]
+    return totals
 
 
 @router.get("/units/{unit_slug}/overview", response_model=UnitOverview)
@@ -433,7 +511,6 @@ def get_unit_overview(unit_slug: str):
             displayName=dept.display_name,
             productCount=len(summaries),
             summary=_avg_department_summary(summaries),
-            monthlyOee=_department_oee_trend(dept.slug, lambda d: d[:7]),
             costs=_department_cost_summary(dept),
         ))
 
@@ -445,3 +522,39 @@ def get_unit_overview(unit_slug: str):
         ),
         departments=dept_entries,
     )
+
+
+@router.get("/units/{unit_slug}/electricity", response_model=ElectricitySummary)
+def get_unit_electricity(unit_slug: str):
+    """Shahi-1's own monthly electricity units/cost -- see electricity.py
+    for why this is unit-wide rather than per-department (the source
+    sheet only ever reports one combined facility total, not broken down
+    by department or product). Each month also carries Packing/Production
+    Dept's own OEE-tracked output that month (see
+    _department_monthly_output), for the chart's indexed production-trend
+    lines -- None for a department with no OEE records that month, not 0.
+    404 means no electricity data available, not an error."""
+    unit = get_unit(unit_slug)
+    if unit is None:
+        raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    result = compute_electricity_summary()
+    if result is None:
+        raise HTTPException(status_code=404, detail="no electricity data registered")
+
+    packing_output: dict[str, float] = {}
+    production_output: dict[str, float] = {}
+    for dept in departments_in_unit(unit_slug):
+        if dept.display_name == "Packing Dept":
+            packing_output = _department_monthly_output(dept.slug)
+        elif dept.display_name == "Production Dept":
+            production_output = _department_monthly_output(dept.slug)
+
+    return ElectricitySummary(months=[
+        ElectricityMonthEntry(**{
+            **m,
+            "sources": [ElectricitySourceEntry(**s) for s in m["sources"]],
+            "packingOutputUnits": packing_output.get(m["month"]),
+            "productionOutputUnits": production_output.get(m["month"]),
+        })
+        for m in result["months"]
+    ])

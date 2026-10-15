@@ -290,10 +290,6 @@ const Charts = (() => {
     return buckets;
   }
 
-  function avg(nums) {
-    return nums.reduce((s, v) => s + v, 0) / nums.length;
-  }
-
   function renderOutputChartOverview(canvasId, allRecords) {
     destroy(canvasId);
     // Short user-picked ranges (e.g. a week) read better as one point per
@@ -359,154 +355,12 @@ const Charts = (() => {
     });
   }
 
-  function renderTrendChart(canvasId, records, mode) {
-    destroy(canvasId);
-    let labels, oee, avail, perf;
-
-    // Machine/line-level records never have a real OEE % (Quality % isn't
-    // tracked at that granularity -- see MachineDayRecord) -- rather than
-    // average nulls into a misleading flat 0% line, drop the OEE dataset
-    // entirely when there's nothing real to plot.
-    const hasOee = records.length > 0 && records[0].oeePct != null;
-
-    if (mode === "full") {
-      const buckets = weeklyBuckets(records);
-      labels = buckets.map((b) => b[0].date);
-      oee = hasOee ? buckets.map((b) => avg(b.map((r) => r.oeePct))) : [];
-      avail = buckets.map((b) => avg(b.map((r) => r.availabilityPct)));
-      perf = buckets.map((b) => avg(b.map((r) => r.performancePct)));
-    } else {
-      labels = records.map((r) => r.date);
-      oee = hasOee ? records.map((r) => r.oeePct) : [];
-      avail = records.map((r) => r.availabilityPct);
-      perf = records.map((r) => r.performancePct);
-    }
-
-    const datasets = [];
-    if (hasOee) {
-      datasets.push({
-        label: "OEE %",
-        data: oee,
-        borderColor: cssVar("--line-oee"),
-        backgroundColor: "transparent",
-        pointRadius: 0,
-        borderWidth: 2,
-      });
-    }
-    datasets.push(
-      {
-        label: "Availability %",
-        data: avail,
-        borderColor: cssVar("--line-avail"),
-        backgroundColor: "transparent",
-        pointRadius: 0,
-        borderWidth: 1.5,
-      },
-      {
-        label: "Performance %",
-        data: perf,
-        borderColor: cssVar("--line-perf"),
-        backgroundColor: "transparent",
-        pointRadius: 0,
-        borderWidth: 1.5,
-      },
-      {
-        label: "World-class benchmark (85%)",
-        data: labels.map(() => 85),
-        borderColor: cssVar("--muted"),
-        backgroundColor: "transparent",
-        borderDash: [6, 4],
-        pointRadius: 0,
-        borderWidth: 1,
-      },
-    );
-
-    const ctx = document.getElementById(canvasId).getContext("2d");
-    instances[canvasId] = new Chart(ctx, {
-      type: "line",
-      data: { labels, datasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
-          tooltip: {
-            callbacks: {
-              label: (item) => `${item.dataset.label}: ${item.parsed.y.toFixed(1)}%`,
-            },
-          },
-        },
-        scales: {
-          x: {
-            ticks: { font: baseFont(), maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
-            grid: { display: false },
-          },
-          y: {
-            min: 0,
-            max: 100,
-            ticks: { font: baseFont(), callback: (v) => v + "%" },
-            grid: { color: cssVar("--border") },
-          },
-        },
-      },
-    });
-  }
-
-  // labels: x-axis categories (month names, or years). series: [{ label:
-  // "Packing Dept", data: [oee, oee, ...] }, ...] -- one line per
-  // department, each its own fixed color (so the two departments stay
-  // visually distinguishable across both the monthly and yearly trend
-  // charts), plus a dashed 85% world-class benchmark reference line. A
-  // series with only 1-2 points still needs visible dots -- a bare line
-  // can't draw a segment with that few points.
-  function renderDepartmentTrendChart(canvasId, labels, series) {
-    destroy(canvasId);
-    const pointRadius = labels.length <= 2 ? 4 : 0;
-    const datasets = series.map((s, i) => ({
-      label: s.label,
-      data: s.data,
-      borderColor: cssVar(COMPARISON_PALETTE[i % COMPARISON_PALETTE.length]),
-      backgroundColor: "transparent",
-      pointRadius,
-      borderWidth: 2,
-    }));
-    datasets.push({
-      label: "World-class benchmark (85%)",
-      data: labels.map(() => 85),
-      borderColor: cssVar("--muted"),
-      backgroundColor: "transparent",
-      borderDash: [6, 4],
-      pointRadius: 0,
-      borderWidth: 1,
-    });
-
-    const ctx = document.getElementById(canvasId).getContext("2d");
-    instances[canvasId] = new Chart(ctx, {
-      type: "line",
-      data: { labels, datasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
-          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${item.parsed.y}% OEE` } },
-        },
-        scales: {
-          x: { ticks: { font: baseFont(), maxRotation: 0 }, grid: { display: false } },
-          y: { min: 0, max: 100, ticks: { font: baseFont(), callback: (v) => v + "%" }, grid: { color: cssVar("--border") } },
-        },
-      },
-    });
-  }
-
   // months: [{monthLabel, gasConsumed, unitsProduced, gasPerThousandUnits}]
   // -- bars for gas consumed (left axis), a line for units produced (right
   // axis), so the relationship between the two is readable at a glance
   // even with only a handful of months. pointRadius is always visible
-  // (never 0) since a sparse few-month series needs dots to read as a line
-  // at all, same reasoning as the department trend chart.
+  // (never 0) since a sparse few-month series needs dots to read as a
+  // line at all.
   function renderGasVsProductionChart(canvasId, months) {
     destroy(canvasId);
     const outputUnit = months.length ? months[0].outputUnit : "units";
@@ -581,16 +435,16 @@ const Charts = (() => {
     });
   }
 
-  // months: [{monthLabel, costPerUnit, manHoursPerUnit, outputUnit}] --
-  // same dual-axis bar+line pattern as renderGasVsProductionChart: bars
-  // for Cost/Unit (the headline "what does it cost to make one" figure,
-  // left axis), a line for Man-Hours/Unit (right axis, a related but
-  // differently-scaled quantity -- Rs. vs. hours -- so it needs its own
-  // axis, not a shared one).
-  function renderLaborCostChart(canvasId, months) {
+  // months: [{monthLabel, costRs, unitsConsumed}] -- same dual-axis
+  // bar+line pattern as renderGasVsProductionChart: bars for Cost (Rs.,
+  // left axis), a line for Units Consumed (right axis, a differently
+  // scaled quantity). Packing/Production Dept output is shown in the
+  // table below instead of on this chart -- an indexed single-axis
+  // version (all 4 series as % of first month) was tried but was harder
+  // to read at a glance than the simple cost/units view, even though it
+  // avoided the dual-axis tradeoff.
+  function renderElectricityChart(canvasId, months) {
     destroy(canvasId);
-    const rawUnit = months.length ? months[0].outputUnit : "unit";
-    const unit = rawUnit === "Packets" ? "Packet" : rawUnit;
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
       data: {
@@ -598,8 +452,8 @@ const Charts = (() => {
         datasets: [
           {
             type: "bar",
-            label: `Cost per ${unit}`,
-            data: months.map((m) => m.costPerUnit),
+            label: "Cost (Rs.)",
+            data: months.map((m) => m.costRs),
             backgroundColor: cssVar("--gold"),
             borderWidth: 0,
             yAxisID: "y",
@@ -607,8 +461,8 @@ const Charts = (() => {
           },
           {
             type: "line",
-            label: `Man-hours per ${unit}`,
-            data: months.map((m) => m.manHoursPerUnit),
+            label: "Units consumed",
+            data: months.map((m) => m.unitsConsumed),
             borderColor: cssVar("--maroon"),
             backgroundColor: "transparent",
             pointRadius: 4,
@@ -628,7 +482,7 @@ const Charts = (() => {
           tooltip: {
             callbacks: {
               label: (item) => item.dataset.yAxisID === "y1"
-                ? `${item.dataset.label}: ${item.parsed.y.toFixed(5)}`
+                ? `${item.dataset.label}: ${Math.round(item.parsed.y).toLocaleString()}`
                 : `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
             },
           },
@@ -638,14 +492,88 @@ const Charts = (() => {
           y: {
             position: "left",
             min: 0,
-            title: { display: true, text: `Cost per ${unit} (Rs.)`, font: baseFont() },
+            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
             ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
             grid: { color: cssVar("--border") },
           },
           y1: {
             position: "right",
             min: 0,
-            title: { display: true, text: `Man-hours per ${unit}`, font: baseFont() },
+            title: { display: true, text: "Units consumed", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { display: false },
+          },
+        },
+      },
+    });
+  }
+
+  // months: [{monthLabel, costPerThousandUnits, manHoursPerThousandUnits,
+  // outputUnit}] -- same dual-axis bar+line pattern as
+  // renderGasVsProductionChart: bars for Cost/1,000 units (the headline
+  // "what does it cost to make a batch" figure, left axis), a line for
+  // Man-Hours/1,000 units (right axis, a related but differently-scaled
+  // quantity -- Rs. vs. hours -- so it needs its own axis, not a shared
+  // one). Per-1,000 rather than per-single-unit so the numbers read as
+  // ordinary figures instead of small fractions.
+  function renderLaborCostChart(canvasId, months) {
+    destroy(canvasId);
+    const unit = months.length ? months[0].outputUnit : "units";
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            type: "bar",
+            label: `Cost per 1,000 ${unit}`,
+            data: months.map((m) => m.costPerThousandUnits),
+            backgroundColor: cssVar("--gold"),
+            borderWidth: 0,
+            yAxisID: "y",
+            order: 2,
+          },
+          {
+            type: "line",
+            label: `Man-hours per 1,000 ${unit}`,
+            data: months.map((m) => m.manHoursPerThousandUnits),
+            borderColor: cssVar("--maroon"),
+            backgroundColor: "transparent",
+            pointRadius: 4,
+            pointBackgroundColor: cssVar("--maroon"),
+            borderWidth: 2,
+            yAxisID: "y1",
+            order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => item.dataset.yAxisID === "y1"
+                ? `${item.dataset.label}: ${item.parsed.y.toLocaleString()}`
+                : `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            position: "left",
+            min: 0,
+            title: { display: true, text: `Cost per 1,000 ${unit} (Rs.)`, font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+          y1: {
+            position: "right",
+            min: 0,
+            title: { display: true, text: `Man-hours per 1,000 ${unit}`, font: baseFont() },
             ticks: { font: baseFont() },
             grid: { display: false },
           },
@@ -659,13 +587,12 @@ const Charts = (() => {
     biggestCauseCallout,
     renderOutputChartDay,
     renderOutputChartOverview,
-    renderTrendChart,
     renderGasVsProductionChart,
+    renderElectricityChart,
     renderLaborCostChart,
     renderRankedOeeChart,
     renderComparisonBarChart,
     renderProductComparisonTrendChart,
-    renderDepartmentTrendChart,
     weeklyBuckets,
   };
 })();

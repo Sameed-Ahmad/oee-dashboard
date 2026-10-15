@@ -1,4 +1,5 @@
-from app.gas import MMBTU_PRICE_RS, compute_gas_summary, compute_total_gas_cost
+from app import gas as gas_module
+from app.gas import MMBTU_PRICE_RS, compute_department_gas_cost_per_thousand_units, compute_gas_summary
 
 
 def _day(date_iso, stock_transferred):
@@ -34,32 +35,61 @@ def test_compute_gas_summary_hnc1_delta_and_ratio():
     assert july["unitsProduced"] == 31 * 900
 
 
-def test_compute_gas_summary_pops_output_unit_is_packets():
-    result = compute_gas_summary("pops", [])
+def test_compute_gas_summary_extruder_output_unit_is_kg():
+    """The gas meter is filed under Extruder (Pops' upstream production
+    line), not Pops itself -- see gas.py module docstring. Extruder's own
+    output is tracked in KG, like the rest of Production Dept, confirmed
+    against its labor-cost workbook line (see labor_cost.py)."""
+    result = compute_gas_summary("extruder", [])
     assert result is not None
     for m in result["months"]:
-        assert m["outputUnit"] == "Packets"
+        assert m["outputUnit"] == "KG"
 
 
 def test_compute_gas_summary_zero_production_month_has_zero_ratio():
-    result = compute_gas_summary("pops", [])
+    result = compute_gas_summary("extruder", [])
     for m in result["months"]:
         assert m["unitsProduced"] == 0
         assert m["gasPerThousandUnits"] == 0.0
         assert m["gasCostPerUnit"] == 0.0
 
 
-def test_compute_total_gas_cost_sums_only_products_with_gas_data():
+def test_compute_department_gas_cost_per_thousand_units_averages_only_products_with_gas_data():
     records = [_day(f"2026-06-{d:02d}", 1000) for d in range(1, 31)]
-    # fryo/ishida/nimco have no gas readings registered at all -- only pops
-    # should contribute, and the department total must reflect that.
-    result = compute_total_gas_cost(["fryo", "pops", "ishida", "nimco"], {"pops": records})
-    assert result is not None
-    assert result["products"] == ["pops"]
-    pops_only = compute_gas_summary("pops", records)
-    expected_total = sum(m["gasConsumed"] * MMBTU_PRICE_RS for m in pops_only["months"])
-    assert result["totalRs"] == round(expected_total, 2)
+    # kuiper/nimco have no gas readings registered at all -- only hnc-1 and
+    # hnc-3 should contribute (both KG, so they share one group).
+    result = compute_department_gas_cost_per_thousand_units(
+        ["hnc-1", "hnc-3", "kuiper", "nimco"], {"hnc-1": records, "hnc-3": records}
+    )
+    assert len(result) == 1
+    group = result[0]
+    assert group["outputUnit"] == "KG"
+    assert group["products"] == ["hnc-1", "hnc-3"]
+
+    hnc1_only = compute_gas_summary("hnc-1", records)
+    hnc3_only = compute_gas_summary("hnc-3", records)
+    hnc1_avg = sum(m["gasCostPerUnit"] for m in hnc1_only["months"]) / len(hnc1_only["months"]) * 1000
+    hnc3_avg = sum(m["gasCostPerUnit"] for m in hnc3_only["months"]) / len(hnc3_only["months"]) * 1000
+    assert group["costPerThousandUnits"] == round((hnc1_avg + hnc3_avg) / 2, 2)
 
 
-def test_compute_total_gas_cost_no_products_have_gas_data_returns_none():
-    assert compute_total_gas_cost(["fryo", "ishida", "nimco"], {}) is None
+def test_compute_department_gas_cost_per_thousand_units_splits_by_unit_instead_of_blending(monkeypatch):
+    """Two gas-tracked products with DIFFERENT output units must not be
+    averaged together -- that would blend two different physical
+    quantities into one meaningless number. Each unit gets its own group.
+    (In today's real data every gas-tracked product happens to be KG, so
+    this simulates a mixed-unit case rather than relying on that
+    coincidence holding forever.)"""
+    monkeypatch.setitem(gas_module.PRODUCT_OUTPUT_UNIT, "extruder", "Packets")
+    records = [_day(f"2026-06-{d:02d}", 1000) for d in range(1, 31)]
+    result = compute_department_gas_cost_per_thousand_units(
+        ["hnc-1", "extruder"], {"hnc-1": records, "extruder": records}
+    )
+    units = {g["outputUnit"]: g for g in result}
+    assert set(units) == {"KG", "Packets"}
+    assert units["KG"]["products"] == ["hnc-1"]
+    assert units["Packets"]["products"] == ["extruder"]
+
+
+def test_compute_department_gas_cost_per_thousand_units_no_products_have_gas_data_returns_empty_list():
+    assert compute_department_gas_cost_per_thousand_units(["fryo", "ishida", "nimco"], {}) == []

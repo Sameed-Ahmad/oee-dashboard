@@ -5,8 +5,16 @@ def _day(date_iso, actual_counter):
     return {"date": date_iso, "actualCounter": actual_counter}
 
 
-def test_extruder_has_no_reconciliation_line():
-    assert compute_output_reconciliation("extruder", []) is None
+def test_extruder_reconciliation_uses_production_pops_line():
+    """Extruder's workbook line is "Production - Pops" (see
+    labor_cost.py's PRODUCT_SOURCE_LINES) -- it has a reconciliation line
+    like any other mapped product now, not an absent one."""
+    records = [_day(f"2026-01-{d:02d}", 1500) for d in range(1, 28)]  # 27 * 1500 = 40,500
+    result = compute_output_reconciliation("extruder", records)
+    assert result is not None
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["outputUnit"] == "KG"
+    assert jan["received"] == 40585.5  # Output Input's own Jan-2026 "Production - Pops" figure
 
 
 def test_fryo_january_gap_matches_hand_calculation():

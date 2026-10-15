@@ -14,14 +14,14 @@ const Product = (() => {
     overview: null,
     gasSummary: null, // null if this product has no gas meter data registered (see backend/data/gas_readings.json)
     laborCostSummary: null, // null if this product has no labor-cost line registered (see backend/app/labor_cost.py)
-    // "Produced vs. received" panel is intentionally pulled from the UI for
-    // now (backend endpoint/computation still exist, see
-    // backend/app/labor_cost.py's compute_output_reconciliation) -- the
-    // premise that Produced should always be >= Received didn't hold up
-    // against real data even after fixing two genuine parser bugs found
-    // while investigating, so it needs verification against the actual
-    // business process (gas/labor-cost mapping, time-boundary conventions)
-    // before it's shown as a trustworthy KPI again.
+    // The original "Produced vs. received" panel (backed by the monthly
+    // labor-cost workbook's Output Input figure) stays pulled -- see
+    // backend/app/labor_cost.py's compute_output_reconciliation docstring.
+    // fgReconciliation below is its replacement for the 4 Packing Dept
+    // products covered by the finer-grained finished-goods warehouse
+    // receipt sheets (see backend/app/finished_goods.py) -- a day-level
+    // comparison that held up much better against real data.
+    fgReconciliation: null, // null if this product has no finished-goods data registered
     allDates: [],
     recordsByDate: {},
     allRecords: [], // sorted ascending by date, day-level (combined) records
@@ -38,7 +38,6 @@ const Product = (() => {
     calendarMonthKey: null,
     calendarSelectMode: "day", // "day" | "range" -- controls what a calendar-day click does
     pendingRangeStart: null, // set after the first click while calendarSelectMode === "range"
-    trendRangeMode: "recent", // "recent" | "full"
   };
 
   async function show(slug) {
@@ -54,23 +53,24 @@ const Product = (() => {
       state.selectedRangeEnd = null;
       state.calendarSelectMode = "day";
       state.pendingRangeStart = null;
-      state.trendRangeMode = "recent";
       state.selectedMachines = [];
       state.machines = [];
       state.machineRecordsByDate = {};
       state.machineAllRecords = {};
 
-      const [overview, allDates, machines, gasSummary, laborCostSummary] = await Promise.all([
+      const [overview, allDates, machines, gasSummary, laborCostSummary, fgReconciliation] = await Promise.all([
         Api.getOverview(slug),
         Api.listDays(slug),
         Api.getMachines(slug),
         Api.getGasSummary(slug),
         Api.getLaborCostSummary(slug),
+        Api.getFgReconciliation(slug),
       ]);
       state.overview = overview;
       state.allDates = allDates;
       state.gasSummary = gasSummary;
       state.laborCostSummary = laborCostSummary;
+      state.fgReconciliation = fgReconciliation;
 
       // Only re-fetch the department (and its product list, for the tab
       // bar) if we've actually moved to a different department -- e.g.
@@ -103,7 +103,6 @@ const Product = (() => {
     renderProductTabs();
     renderHeader();
     renderMachineSelector();
-    setTrendToggle("recent");
     render();
   }
 
@@ -211,7 +210,6 @@ const Product = (() => {
     state.selectedShift = "combined";
     state.selectedRangeStart = null;
     state.selectedRangeEnd = null;
-    setTrendToggle("recent");
     renderMachineSelector();
     render();
   }
@@ -322,19 +320,6 @@ const Product = (() => {
     return day.shifts.find((s) => s.shiftCode === state.selectedShift) || day;
   }
 
-  // ---------- Recent-window helper for the trend chart (always day-level) ----------
-
-  function getRecentWindow(endDate, size = 60) {
-    const records = currentAllRecords();
-    let endIdx = records.length - 1;
-    if (endDate) {
-      const idx = records.findIndex((r) => r.date === endDate);
-      if (idx !== -1) endIdx = idx;
-    }
-    const startIdx = Math.max(0, endIdx - size + 1);
-    return records.slice(startIdx, endIdx + 1);
-  }
-
   // ---------- Rendering ----------
 
   function render() {
@@ -345,9 +330,9 @@ const Product = (() => {
     } else {
       renderDayMode();
     }
-    renderTrendSection();
     renderGasSection();
     renderLaborCostSection();
+    renderFgReconciliationSection();
   }
 
   function recordsInSelectedRange() {
@@ -773,27 +758,6 @@ const Product = (() => {
     }
   }
 
-  function renderTrendSection() {
-    el("trendHeading").textContent = "OEE · Availability · Performance over time";
-    el("trendPanelSub").style.display = "none";
-    el("trendToggle").style.display = state.mode === "range" ? "none" : "";
-
-    if (state.mode === "range") {
-      const records = recordsInSelectedRange();
-      // Longer ranges fall back to weekly aggregation for legibility, same
-      // threshold-free reasoning as the "full range" toggle elsewhere.
-      const mode = records.length > 90 ? "full" : "recent";
-      Charts.renderTrendChart("trendChart", records, mode);
-      return;
-    }
-
-    const endDate = state.mode === "day" ? state.selectedDate : null;
-    const records = state.trendRangeMode === "full"
-      ? currentAllRecords()
-      : getRecentWindow(endDate, 60);
-    Charts.renderTrendChart("trendChart", records, state.trendRangeMode);
-  }
-
   // Gas meter readings are only entered manually for a handful of products
   // (see backend/data/gas_readings.json) and are inherently monthly (one
   // start/end meter reading per month, no daily granularity) -- so this
@@ -875,8 +839,8 @@ const Product = (() => {
           <th class="numeric">Output (${unit})</th>
           <th class="numeric">Man-Hours</th>
           <th class="numeric">Labor Cost (Rs.)</th>
-          <th class="numeric">Cost / ${unit === "Packets" ? "Packet" : "KG"}</th>
-          <th class="numeric">Man-Hours / ${unit === "Packets" ? "Packet" : "KG"}</th>
+          <th class="numeric">Cost / 1,000 ${unit}</th>
+          <th class="numeric">Man-Hours / 1,000 ${unit}</th>
         </tr>
       </thead>
       <tbody>
@@ -886,8 +850,8 @@ const Product = (() => {
             <td class="numeric">${m.output.toLocaleString()}</td>
             <td class="numeric">${m.manHours.toLocaleString()}</td>
             <td class="numeric">${m.laborCost.toLocaleString()}</td>
-            <td class="numeric">${m.costPerUnit.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-            <td class="numeric">${m.manHoursPerUnit.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+            <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+            <td class="numeric">${m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -901,6 +865,83 @@ const Product = (() => {
     } else {
       sharedNote.style.display = "none";
     }
+  }
+
+  // Produced vs. Received, from the finished-goods warehouse receipt
+  // sheets (see backend/app/finished_goods.py) -- only registered for the
+  // 4 Packing Dept products those sheets cover. Same
+  // whole-product-Overview-only condition as gas/labor-cost above, since
+  // this data isn't broken down per machine. Shown as one row per month;
+  // clicking a month opens its day-by-day breakdown in a modal (flagged
+  // days highlighted red there -- see finished_goods.compute_fg_reconciliation).
+  function renderFgReconciliationSection() {
+    const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
+    const section = el("fgReconciliationSection");
+    if (!isPlainOverview || !state.fgReconciliation || state.fgReconciliation.months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    const { months } = state.fgReconciliation;
+
+    const table = el("fgReconciliationTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th class="numeric">Produced</th>
+          <th class="numeric">Received</th>
+          <th class="numeric">Gap</th>
+          <th class="numeric">Gap %</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${months.map((m) => `
+          <tr class="clickable-row${m.flagged ? " flagged-row" : ""}" data-month="${m.month}">
+            <td>${m.monthLabel}</td>
+            <td class="numeric">${m.produced.toLocaleString()}</td>
+            <td class="numeric">${m.received.toLocaleString()}</td>
+            <td class="numeric">${m.gap.toLocaleString()}</td>
+            <td class="numeric">${m.gapPct.toLocaleString()}%</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
+    table.querySelectorAll("tr[data-month]").forEach((row) => {
+      row.addEventListener("click", () => {
+        const month = months.find((m) => m.month === row.dataset.month);
+        openFgMonthModal(month);
+      });
+    });
+  }
+
+  function openFgMonthModal(month) {
+    el("fgMonthModalTitle").textContent = `Produced vs. Received -- ${month.monthLabel}`;
+    const table = el("fgMonthModalTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th class="numeric">Produced</th>
+          <th class="numeric">Received</th>
+          <th class="numeric">Gap</th>
+          <th class="numeric">Gap %</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${month.days.map((d) => `
+          <tr class="${d.flagged ? "flagged-row" : ""}">
+            <td>${Utils.formatDateShort(d.date)}</td>
+            <td class="numeric">${d.produced.toLocaleString()}</td>
+            <td class="numeric">${d.received.toLocaleString()}</td>
+            <td class="numeric">${d.gap.toLocaleString()}</td>
+            <td class="numeric">${d.gapPct.toLocaleString()}%</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
+    Modal.open(el("fgMonthModalOverlay"));
   }
 
   function setBar(suffix, value) {
@@ -982,7 +1023,6 @@ const Product = (() => {
     state.selectedRangeStart = start <= end ? start : end;
     state.selectedRangeEnd = start <= end ? end : start;
     state.pendingRangeStart = null;
-    setTrendToggle("recent");
     Modal.close(el("dateModalOverlay"));
     render();
   }
@@ -995,7 +1035,6 @@ const Product = (() => {
     state.mode = "day";
     state.selectedDate = dateStr;
     state.selectedShift = "combined";
-    setTrendToggle("recent");
     Modal.close(el("dateModalOverlay"));
     render();
   }
@@ -1057,13 +1096,6 @@ const Product = (() => {
     }
   }
 
-  function setTrendToggle(mode) {
-    state.trendRangeMode = mode;
-    document.querySelectorAll("#trendToggle button").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.range === mode);
-    });
-  }
-
   // ---------- Wiring (once per page load, not per product switch) ----------
 
   let controlsWired = false;
@@ -1077,6 +1109,7 @@ const Product = (() => {
     Modal.wireOverlay(el("downtimeModalOverlay"), el("downtimeModalClose"));
     Modal.wireOverlay(el("reliabilityModalOverlay"), el("reliabilityModalClose"));
     Modal.wireOverlay(el("loadsheddingModalOverlay"), el("loadsheddingModalClose"));
+    Modal.wireOverlay(el("fgMonthModalOverlay"), el("fgMonthModalClose"));
 
     el("overviewBtn").addEventListener("click", () => {
       state.mode = "overview";
@@ -1084,7 +1117,6 @@ const Product = (() => {
       state.selectedShift = "combined";
       state.selectedRangeStart = null;
       state.selectedRangeEnd = null;
-      setTrendToggle("recent");
       Modal.close(el("dateModalOverlay"));
       render();
     });
@@ -1116,13 +1148,6 @@ const Product = (() => {
 
     el("calYearSelect").addEventListener("change", (e) => {
       jumpToYear(e.target.value);
-    });
-
-    document.querySelectorAll("#trendToggle button").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        setTrendToggle(btn.dataset.range);
-        renderTrendSection();
-      });
     });
 
     el("refreshBtn").addEventListener("click", async () => {

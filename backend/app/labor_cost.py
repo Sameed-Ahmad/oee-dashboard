@@ -28,8 +28,10 @@ must be summed together; Coated Peanut and Namak Para share ONE combined
 source, so both products show the same blended figure (mathematically,
 splitting a blended cost proportionally by each product's own output
 yields the identical cost-per-unit for both anyway -- there's no
-information in this data to make them differ); Extruder has no
-cost-center line anywhere in the workbook, so it has no figure at all.
+information in this data to make them differ); Extruder's line is filed
+as "Production - Pops" (see PRODUCT_SOURCE_LINES), not a line literally
+named "Extruder" -- it's Pops' upstream production-stage machine, not a
+separate product with its own line.
 """
 from __future__ import annotations
 
@@ -57,7 +59,12 @@ MONTH_HEADER_RE = re.compile(r"^([A-Za-z]{3})-(\d{4})$")
 
 # Product slug -> source line name(s) in the workbook to sum together.
 # See module docstring for why Nimco/Coated Peanut/Namak Para aren't
-# simple 1:1 matches, and why Extruder is absent entirely.
+# simple 1:1 matches. Extruder's line is filed as "Production - Pops" --
+# NOT a typo or a different product: Extruder is Pops' upstream
+# production-stage machine (see gas.py module docstring for the same
+# mix-up found in the gas meter readings), and this line's own KG figures
+# track Extruder's OEE-tracked output almost exactly (e.g. June 2026:
+# workbook 26,274.5 KG vs. OEE-tracked 26,646 KG).
 PRODUCT_SOURCE_LINES: dict[str, list[str]] = {
     "fryo": ["Packing -Fry -O"],
     "ishida": ["Packing - Ishida"],
@@ -68,6 +75,7 @@ PRODUCT_SOURCE_LINES: dict[str, list[str]] = {
     "kuiper": ["Production - Kuiper"],
     "coated-peanut": ["Production - Peanut & Namakpar"],
     "namak-para": ["Production - Peanut & Namakpar"],
+    "extruder": ["Production - Pops"],
 }
 
 SHARED_PRODUCTS = {"coated-peanut", "namak-para"}
@@ -204,8 +212,8 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
             "laborCost": round(total_cost, 2),
             "output": round(total_output, 1),
             "outputUnit": unit,
-            "costPerUnit": round(total_cost / total_output, 4),
-            "manHoursPerUnit": round(total_hours / total_output, 6),
+            "costPerThousandUnits": round(total_cost / total_output * 1000, 2),
+            "manHoursPerThousandUnits": round(total_hours / total_output * 1000, 3),
         })
 
     return {
@@ -304,42 +312,57 @@ def compute_output_reconciliation(slug: str, records: list[dict]) -> dict | None
 
 
 def compute_department_labor_cost(department: str) -> dict | None:
-    """Total Labor Cost (Rs.) for an entire department ("Packing" or
-    "Production"), summed across every month filled in on the source
-    workbook so far. Reads the workbook's own department TOTAL row
-    directly -- already the sum of every cost-center line in that
-    department, including lines with no 1:1 mapping to one of this
+    """Total Labor Cost (Rs.) -- and an accurate Cost per 1,000 units --
+    for an entire department ("Packing" or "Production"), summed across
+    every month filled in on the source workbook so far. Reads the
+    workbook's own department TOTAL rows directly, in both the Labor Cost
+    and Output tables -- already the sum of every cost-center line in
+    that department, including lines with no 1:1 mapping to one of this
     dashboard's 10 products (e.g. "Packing - Printing") -- rather than
     summing our own per-product figures, which would double-count Coated
     Peanut/Namak Para's shared line and miss unmapped lines entirely.
+    costPerThousandUnits is computed from these same summed totals (total
+    Rs. / total output), not by averaging each month's own ratio, so it's
+    correctly output-weighted across months of very different volume.
 
-    Returns None if the workbook, this table, or this department's row
-    can't be found, or no month has been filled in yet."""
+    Returns None if the workbook, either table, or this department's row
+    in either can't be found, or no month has both cost and output
+    filled in yet."""
     wb = _load_workbook()
     if wb is None or REPORT_SHEET_NAME not in wb.sheetnames:
         return None
     ws = wb[REPORT_SHEET_NAME]
 
     cost_table = _find_table(ws, TABLE_HEADERS["laborCost"])
-    if not cost_table:
+    output_table = _find_table(ws, TABLE_HEADERS["output"])
+    if not cost_table or not output_table:
         return None
-    header_row, months = cost_table
+    cost_header_row, cost_months = cost_table
+    output_header_row, output_months = output_table
 
-    row = _department_total_row(ws, header_row, department)
-    if row is None:
+    cost_row = _department_total_row(ws, cost_header_row, department)
+    output_row = _department_total_row(ws, output_header_row, department)
+    if cost_row is None or output_row is None:
         return None
+
+    unit = ws.cell(row=output_row, column=3).value or ""
 
     def sort_key(header: str) -> tuple[int, int]:
         mon, year = header.split("-")
         return int(year), MONTH_ABBR.index(mon)
 
-    total = 0.0
+    common_headers = set(cost_months) & set(output_months)
+
+    total_cost = 0.0
+    total_output = 0.0
     months_included = []
-    for header in sorted(months, key=sort_key):
-        value = _num(ws.cell(row=row, column=months[header]).value)
-        if value <= 0:
+    for header in sorted(common_headers, key=sort_key):
+        cost_value = _num(ws.cell(row=cost_row, column=cost_months[header]).value)
+        output_value = _num(ws.cell(row=output_row, column=output_months[header]).value)
+        if cost_value <= 0 or output_value <= 0:
             continue
-        total += value
+        total_cost += cost_value
+        total_output += output_value
         mon, year = header.split("-")
         months_included.append(f"{year}-{MONTH_ABBR.index(mon) + 1:02d}")
 
@@ -347,7 +370,9 @@ def compute_department_labor_cost(department: str) -> dict | None:
         return None
 
     return {
-        "totalRs": round(total, 2),
+        "totalRs": round(total_cost, 2),
         "firstMonth": months_included[0],
         "lastMonth": months_included[-1],
+        "costPerThousandUnits": round(total_cost / total_output * 1000, 2),
+        "outputUnit": unit,
     }
