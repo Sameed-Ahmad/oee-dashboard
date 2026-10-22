@@ -221,6 +221,22 @@ class ElectricitySummary(BaseModel):
     months: list[ElectricityMonthEntry]
 
 
+class GasLpgMonthEntry(BaseModel):
+    month: str  # "2026-01"
+    monthLabel: str  # "January 2026"
+    gasM3: float | None  # Shahi-1's own direct-production gas use (NOT the Gas Generator -- see electricity.py)
+    gasCostRs: float | None
+    gasRatePerM3: float | None
+    lpgKg: float | None
+    lpgCostRs: float | None
+    lpgRatePerKg: float | None
+    totalCostRs: float  # gasCostRs + lpgCostRs (0 for whichever is missing that month)
+
+
+class GasLpgSummary(BaseModel):
+    months: list[GasLpgMonthEntry]
+
+
 class ProductInfo(BaseModel):
     slug: str
     displayName: str
@@ -301,6 +317,7 @@ class DepartmentCostSummary(BaseModel):
     laborCostPerThousandUnits: float | None  # output-weighted, from the workbook's own department totals
     laborCostOutputUnit: str | None  # "Packets" | "KG"
     gasCostGroups: list[DepartmentGasCostGroup]  # one per distinct output unit among gas-tracked products; empty if none
+    electricityCostPerUnitRs: float | None  # Rs. per unit of laborCostOutputUnit; see _department_electricity_cost_per_unit for why this is a partial/approximate figure
 
 
 class UnitOverviewDepartmentEntry(BaseModel):

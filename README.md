@@ -297,6 +297,54 @@ sheet, at parse time:
   console output and in every product's `/overview` response
   (`dataQualityWarnings`) rather than silently dropped or "fixed."
 
+## Finance panels: labor cost, electricity, gas/LPG, finished-goods reconciliation
+
+Four source-of-truth workbooks, each entirely separate from the day-by-day
+OEE workbooks `parser.py` handles, feed a set of cost/reconciliation panels
+layered on top of the OEE data:
+
+- **Labor cost** (`backend/app/labor_cost.py`, reading
+  `backend/data/*Labor Cost Analysis*.xlsx`'s "Shahi-1 Report" sheet) --
+  monthly Output/Man-Hours/Labor Cost per cost-center line, summed where a
+  workbook line covers more than one dashboard product (e.g. Nimco's "R-10"
+  + "R-20 / R-30"). Surfaced two ways: a **Total labor cost** card on every
+  product's Overview page, and on the unit page's department cards as
+  **Labor cost / 1,000 Packets** (Packing) or **Labor cost / 1,000 KG**
+  (Production) -- output-weighted (`total cost ÷ total output × 1000`), not
+  a plain monthly average.
+- **Electricity** (`backend/app/electricity.py`, reading
+  `backend/data/utility/Energy Consumption Report -2026.xlsx`'s
+  "Electricity Consumption-26" sheet) -- Shahi-1's own monthly share
+  (units + cost, bars + line) of the facility-wide total across its 4
+  power sources (K-Electric, Gas Generator, Diesel Generator, Solar),
+  shown on the unit page below the department cards; clicking a month
+  opens the per-source breakdown. Since the sheet never splits usage by
+  department, the unit page's department cards also show an approximate
+  **Electricity cost / Packet or / KG** -- Shahi-1's combined bill
+  apportioned across a department's own output for the months they
+  overlap, not a true per-department meter reading.
+- **Gas & LPG** (same module, same workbook's "Gas Consumption-26" sheet)
+  -- Shahi-1 Production's own direct gas (m³) and LPG (KG) use and cost,
+  shown as its own panel right below Electricity. Deliberately excludes
+  the sheet's "Power Generation" gas column (that's the same expense as
+  Electricity's own Gas Generator bill, so including it here would
+  double-count) and Wood Pellets (a Shahi+Zain combined figure with no way
+  to split out Shahi-1's own share).
+- **Produced vs. Received** (`backend/app/finished_goods.py`, reading
+  `backend/data/ERP/PACKING SHAHI 1 <Mon>26 TRANSFAR ORDER SHIPMENT.xlsx`,
+  one file per month) -- compares this dashboard's own OEE-tracked output
+  (`stockTransferred`) against the finished-goods warehouse's actual
+  received quantity, day by day, for the 4 Packing Dept products (Fry-O,
+  Pops, Ishida, Nimco) these ERP exports cover. Each row is mapped to one
+  of the 4 products by location first (Ishida 1/Ishida 2/Saminato always
+  count as Ishida, regardless of what brand ran on them that day), then by
+  recognized brand prefix, then by a known location's own usual brand,
+  then by Item Group as a last resort -- see the module docstring for the
+  full priority order and the real data bugs each step fixes. Shown on
+  each of those 4 products' Overview page as one row per month (flagged
+  red if that month's gap looks unusual); clicking a month opens its
+  day-by-day breakdown.
+
 ## Adding a new product
 
 The parsing engine, API, and cache layer are all generic — onboarding a new

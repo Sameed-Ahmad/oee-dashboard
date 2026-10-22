@@ -7,13 +7,15 @@ const Unit = (() => {
 
   async function show(unitSlug) {
     wireControlsOnce();
-    const [overview, electricity] = await Promise.all([
+    const [overview, electricity, gasLpg] = await Promise.all([
       Api.getUnitOverview(unitSlug),
       Api.getElectricity(unitSlug),
+      Api.getGasLpg(unitSlug),
     ]);
     renderHeader(overview);
     renderCards(overview);
     renderElectricitySection(electricity);
+    renderGasLpgSection(gasLpg);
   }
 
   let controlsWired = false;
@@ -78,6 +80,12 @@ const Unit = (() => {
               <strong>${formatRs(c.laborCostPerThousandUnits)}</strong>
             </div>
             ` : ""}
+            ${c.electricityCostPerUnitRs != null ? `
+            <div>
+              <span>Electricity cost / ${c.laborCostOutputUnit === "Packets" ? "Packet" : c.laborCostOutputUnit}</span>
+              <strong>Rs. ${c.electricityCostPerUnitRs.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>
+            </div>
+            ` : ""}
             ${c.gasCostGroups.map((g) => `
             <div>
               <span>Gas cost / 1,000 ${g.outputUnit} (avg of ${g.products.length} product${g.products.length === 1 ? "" : "s"})</span>
@@ -139,6 +147,48 @@ const Unit = (() => {
         openElectricityMonthModal(month);
       });
     });
+  }
+
+  // Shahi 1's own direct-production Gas (m3) and LPG (KG) use -- a
+  // separate fuel-use report from Electricity's Gas Generator figure
+  // (see backend/app/electricity.py for why those aren't the same
+  // thing, and why Wood Pellets isn't shown here at all yet).
+  function renderGasLpgSection(gasLpg) {
+    const section = el("gasLpgSection");
+    if (!gasLpg || gasLpg.months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    const months = gasLpg.months;
+    Charts.renderGasLpgChart("gasLpgChart", months);
+
+    const table = el("gasLpgTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th class="numeric">Gas (m&sup3;)</th>
+          <th class="numeric">Gas Cost (Rs.)</th>
+          <th class="numeric">LPG (KG)</th>
+          <th class="numeric">LPG Cost (Rs.)</th>
+          <th class="numeric">Total Cost (Rs.)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${months.map((m) => `
+          <tr>
+            <td>${m.monthLabel}</td>
+            <td class="numeric">${m.gasM3 != null ? m.gasM3.toLocaleString() : "—"}</td>
+            <td class="numeric">${m.gasCostRs != null ? formatRs(m.gasCostRs) : "—"}</td>
+            <td class="numeric">${m.lpgKg != null ? m.lpgKg.toLocaleString() : "—"}</td>
+            <td class="numeric">${m.lpgCostRs != null ? formatRs(m.lpgCostRs) : "—"}</td>
+            <td class="numeric">${formatRs(m.totalCostRs)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    `;
   }
 
   // Source-by-source drill-down for one month: each of the 4 power

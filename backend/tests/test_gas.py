@@ -15,12 +15,13 @@ def test_compute_gas_summary_hnc1_delta_and_ratio():
         [_day(f"2026-06-{d:02d}", 1000) for d in range(1, 31)]
         + [_day(f"2026-07-{d:02d}", 900) for d in range(1, 32)]
         + [_day(f"2026-08-{d:02d}", 800) for d in range(1, 32)]
+        + [_day(f"2026-09-{d:02d}", 700) for d in range(1, 31)]
     )
     result = compute_gas_summary("hnc-1", records)
     assert result is not None
     assert result["mmbtuPriceRs"] == MMBTU_PRICE_RS
     months = result["months"]
-    assert [m["month"] for m in months] == ["2026-06", "2026-07", "2026-08"]
+    assert [m["month"] for m in months] == ["2026-06", "2026-07", "2026-08", "2026-09"]
 
     june = months[0]
     assert june["monthLabel"] == "June 2026"

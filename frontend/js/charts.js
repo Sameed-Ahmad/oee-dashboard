@@ -508,6 +508,59 @@ const Charts = (() => {
     });
   }
 
+  // months: [{monthLabel, gasCostRs, lpgCostRs}] -- Gas and LPG cost both
+  // being Rs. figures, they share one axis as two grouped bars -- no
+  // dual-axis tradeoff needed here the way Electricity's Cost-vs-Units
+  // pairing has one (m3 of gas and KG of LPG aren't shown on this chart
+  // at all, only in the table below, to avoid forcing a 3rd/4th scale
+  // onto the same axis).
+  function renderGasLpgChart(canvasId, months) {
+    destroy(canvasId);
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            label: "Gas cost (Rs.)",
+            data: months.map((m) => m.gasCostRs),
+            backgroundColor: cssVar("--gold"),
+            borderWidth: 0,
+          },
+          {
+            label: "LPG cost (Rs.)",
+            data: months.map((m) => m.lpgCostRs),
+            backgroundColor: cssVar("--maroon"),
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            min: 0,
+            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+        },
+      },
+    });
+  }
+
   // months: [{monthLabel, costPerThousandUnits, manHoursPerThousandUnits,
   // outputUnit}] -- same dual-axis bar+line pattern as
   // renderGasVsProductionChart: bars for Cost/1,000 units (the headline
@@ -589,6 +642,7 @@ const Charts = (() => {
     renderOutputChartOverview,
     renderGasVsProductionChart,
     renderElectricityChart,
+    renderGasLpgChart,
     renderLaborCostChart,
     renderRankedOeeChart,
     renderComparisonBarChart,

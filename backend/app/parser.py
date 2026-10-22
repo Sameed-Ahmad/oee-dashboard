@@ -102,12 +102,18 @@ def find_summary_anchor(ws, max_row: int = 60, max_col: int = 45) -> tuple[int |
     return None, None
 
 
-def find_row_with_label(ws, label: str, start_row: int = 1, max_row: int = 90) -> int | None:
+def find_row_with_label(ws, label: str, start_row: int = 1, max_row: int = 90, max_col: int = 5) -> int | None:
+    """Searches the first `max_col` columns of each row for `label`
+    (case-insensitive, trimmed) -- not hardcoded to column A, since at
+    least one real sheet (Pops' October 2026 daily sheets) has its whole
+    layout shifted right by two columns, landing "Total" in column C
+    instead of A."""
     target = label.strip().lower()
     for r in range(start_row, min(ws.max_row, max_row) + 1):
-        v = ws[f"A{r}"].value
-        if isinstance(v, str) and v.strip().lower() == target:
-            return r
+        for c in range(1, max_col + 1):
+            v = ws.cell(row=r, column=c).value
+            if isinstance(v, str) and v.strip().lower() == target:
+                return r
     return None
 
 
@@ -330,7 +336,8 @@ def parse_shift_sheet(ws, sheet_name: str) -> tuple[dict | None, str | None]:
 
     downtime = {}
     for c in dt_cols:
-        label = ws.cell(row=header_row, column=c).value or f"Category {c}"
+        raw_label = ws.cell(row=header_row, column=c).value
+        label = str(raw_label).strip() if raw_label not in (None, "") else f"Category {c}"
         downtime[label] = float(_num(ws.cell(row=total_row, column=c).value))
 
     try:

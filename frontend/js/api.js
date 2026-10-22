@@ -51,6 +51,7 @@ const Api = (() => {
     getDepartmentOverview: (slug) => get(`/departments/${slug}/overview`),
     getUnitOverview: (slug) => get(`/units/${slug}/overview`),
     getElectricity: (slug) => getOptional(`/units/${slug}/electricity`),
+    getGasLpg: (slug) => getOptional(`/units/${slug}/gas-lpg`),
     getMachines: (slug) => get(`/products/${slug}/machines`),
   };
 })();

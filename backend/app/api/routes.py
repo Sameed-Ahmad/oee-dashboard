@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from ..cache import compute_summary, load_cache, save_cache
-from ..electricity import compute_electricity_summary
+from ..electricity import compute_electricity_summary, compute_gas_lpg_summary
 from ..finished_goods import compute_fg_reconciliation
 from ..gas import compute_department_gas_cost_per_thousand_units, compute_gas_summary
 from ..labor_cost import compute_department_labor_cost, compute_labor_cost_summary, compute_output_reconciliation
@@ -25,6 +25,8 @@ from ..models import (
     ElectricityMonthEntry,
     ElectricitySourceEntry,
     ElectricitySummary,
+    GasLpgMonthEntry,
+    GasLpgSummary,
     FgReconciliationDayEntry,
     FgReconciliationMonthEntry,
     GasMonthEntry,
@@ -63,10 +65,18 @@ from ..products.registry import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
-# In-memory cache of parsed records + warnings + machine groups, keyed by product slug.
-_records_by_slug: dict[str, list[dict]] = {}
-_warnings_by_slug: dict[str, list[str]] = {}
-_groups_by_slug: dict[str, dict[str, list[dict]]] = {}
+# In-memory cache of parsed records + warnings + machine groups, keyed by
+# product slug. ONE dict (not three parallel ones keyed the same way) so a
+# rebuild updates a product's entry with a single dict assignment -- Python
+# only guarantees a single __setitem__ is atomic under the GIL, not a
+# sequence of them, and _load's background-thread callers (see
+# rebuild_all_products_in_background) run concurrently with request
+# handlers reading this same cache. Three parallel dicts let a reader land
+# between two of the three writes and see a product's fresh records paired
+# with its stale (or entirely absent) groups -- a real KeyError this
+# produced under load, surfacing as an intermittent 500 on whichever
+# endpoint happened to read mid-rebuild.
+_cache_by_slug: dict[str, dict] = {}
 
 
 def _apply_fresh_data(slug: str, records: list[dict], warnings: list[str], groups: dict[str, list[dict]]) -> None:
@@ -75,9 +85,7 @@ def _apply_fresh_data(slug: str, records: list[dict], warnings: list[str], group
     by an earlier request) picks up a later rebuild immediately, rather
     than staying locked to whatever was in memory at first load until the
     process restarts."""
-    _records_by_slug[slug] = records
-    _warnings_by_slug[slug] = warnings
-    _groups_by_slug[slug] = groups
+    _cache_by_slug[slug] = {"records": records, "warnings": warnings, "groups": groups}
 
 
 def _rebuild_one(config):
@@ -130,25 +138,24 @@ def _load(slug: str) -> tuple[list[dict], list[str], dict[str, list[dict]]]:
     """Loads (records, warnings, groups) for a product, cache-first.
     Products with no excel_dir registered yet return ([], [], {}) without
     attempting to parse."""
-    if slug in _records_by_slug:
-        return _records_by_slug[slug], _warnings_by_slug[slug], _groups_by_slug[slug]
+    cached = _cache_by_slug.get(slug)
+    if cached is not None:
+        return cached["records"], cached["warnings"], cached["groups"]
 
     config = PRODUCTS[slug]
     if config.excel_dir is None:
         records, warnings, groups = [], [], {}
     else:
-        cached = load_cache(slug)
-        if cached is None:
+        disk_cached = load_cache(slug)
+        if disk_cached is None:
             logger.warning("no cache found for '%s', building it now", slug)
             result = parse_workbook(config)
             records, warnings, groups = result.records, result.errors, result.groups or {}
             save_cache(slug, records, warnings, groups)
         else:
-            records, warnings, groups = cached["records"], cached["warnings"], cached["groups"]
+            records, warnings, groups = disk_cached["records"], disk_cached["warnings"], disk_cached["groups"]
 
-    _records_by_slug[slug] = records
-    _warnings_by_slug[slug] = warnings
-    _groups_by_slug[slug] = groups
+    _apply_fresh_data(slug, records, warnings, groups)
     return records, warnings, groups
 
 
@@ -455,11 +462,12 @@ def _department_summaries(dept_slug: str) -> list[ProductSummary]:
 
 
 def _department_cost_summary(dept) -> DepartmentCostSummary:
-    """Total Labor Cost and average Gas Cost per 1,000 units (one group per
-    output unit, see compute_department_gas_cost_per_thousand_units) for a
-    department, for the Shahi 1 unit cards. The workbook's own department
-    row label is just the display name without " Dept" ("Packing Dept" ->
-    "Packing"), matching its own spelling exactly.
+    """Total Labor Cost, average Gas Cost per 1,000 units (one group per
+    output unit, see compute_department_gas_cost_per_thousand_units), and
+    Electricity Cost per unit of this department's own output, for the
+    Shahi 1 unit cards. The workbook's own department row label is just
+    the display name without " Dept" ("Packing Dept" -> "Packing"),
+    matching its own spelling exactly.
     """
     workbook_label = dept.display_name.replace(" Dept", "")
     labor = compute_department_labor_cost(workbook_label)
@@ -468,6 +476,8 @@ def _department_cost_summary(dept) -> DepartmentCostSummary:
     records_by_slug = {slug: _get_records(slug) for slug in product_slugs}
     gas_groups = compute_department_gas_cost_per_thousand_units(product_slugs, records_by_slug)
 
+    electricity_cost_per_unit = _department_electricity_cost_per_unit(dept.slug)
+
     return DepartmentCostSummary(
         totalLaborCostRs=labor["totalRs"] if labor else None,
         laborCostFirstMonth=labor["firstMonth"] if labor else None,
@@ -475,7 +485,40 @@ def _department_cost_summary(dept) -> DepartmentCostSummary:
         laborCostPerThousandUnits=labor["costPerThousandUnits"] if labor else None,
         laborCostOutputUnit=labor["outputUnit"] if labor else None,
         gasCostGroups=[DepartmentGasCostGroup(**g) for g in gas_groups],
+        electricityCostPerUnitRs=electricity_cost_per_unit,
     )
+
+
+def _department_electricity_cost_per_unit(dept_slug: str) -> float | None:
+    """Rs. per unit of this department's own OEE-tracked output (Packets
+    for Packing, KG for Production -- see laborCostOutputUnit on the same
+    DepartmentCostSummary for the label), using Shahi-1's facility-wide
+    electricity cost (see electricity.py -- NOT split by department, only
+    the combined Shahi-1 total is available at the source) summed only
+    over months this department also has output for. A partial/
+    approximate figure by necessity -- this department's own true share
+    of the electricity bill isn't available at the source, only the
+    combined Shahi-1 total -- not an isolated per-department cost.
+
+    Returns None if there's no overlap between electricity months and
+    this department's own output months."""
+    electricity = compute_electricity_summary()
+    if electricity is None:
+        return None
+    output_by_month = _department_monthly_output(dept_slug)
+
+    total_cost = 0.0
+    total_output = 0.0
+    for m in electricity["months"]:
+        output = output_by_month.get(m["month"])
+        if not output:
+            continue
+        total_cost += m["costRs"]
+        total_output += output
+
+    if total_output <= 0:
+        return None
+    return round(total_cost / total_output, 2)
 
 
 def _department_monthly_output(dept_slug: str) -> dict[str, float]:
@@ -531,9 +574,9 @@ def get_unit_electricity(unit_slug: str):
     sheet only ever reports one combined facility total, not broken down
     by department or product). Each month also carries Packing/Production
     Dept's own OEE-tracked output that month (see
-    _department_monthly_output), for the chart's indexed production-trend
-    lines -- None for a department with no OEE records that month, not 0.
-    404 means no electricity data available, not an error."""
+    _department_monthly_output) -- None for a department with no OEE
+    records that month, not 0. 404 means no electricity data available,
+    not an error."""
     unit = get_unit(unit_slug)
     if unit is None:
         raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
@@ -558,3 +601,20 @@ def get_unit_electricity(unit_slug: str):
         })
         for m in result["months"]
     ])
+
+
+@router.get("/units/{unit_slug}/gas-lpg", response_model=GasLpgSummary)
+def get_unit_gas_lpg(unit_slug: str):
+    """Shahi-1's own monthly direct-production Gas (m3) and LPG (KG)
+    consumption/cost -- see electricity.py's module docstring for why
+    this reads the "Gas Consumption-26" sheet's "Shahi -1 Production" and
+    "Shahi" (LPG) columns specifically, not its "Power Generation" gas
+    (already counted in /electricity's Gas Generator figure) or Wood
+    Pellets (no Shahi-only split available). 404 means no gas/LPG data
+    available, not an error."""
+    if get_unit(unit_slug) is None:
+        raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    result = compute_gas_lpg_summary()
+    if result is None:
+        raise HTTPException(status_code=404, detail="no gas/LPG data registered")
+    return GasLpgSummary(months=[GasLpgMonthEntry(**m) for m in result["months"]])
