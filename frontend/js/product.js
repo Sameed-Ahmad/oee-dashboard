@@ -811,7 +811,12 @@ const Product = (() => {
   // same reasoning as the gas panel above, this only makes sense on the
   // whole-product Overview, and is hidden entirely for any product with no
   // labor-cost line registered (Extruder has none at all -- see the
-  // module docstring for why).
+  // module docstring for why). The two "Contractual" columns are a second,
+  // independent data source layered in on top (see
+  // backend/app/contractor_labor.py) -- only Fry-O/Pops/Nimco have a
+  // contractor bill registered (Ishida doesn't yet), so those columns are
+  // omitted entirely when nothing in the table has contractual data, and a
+  // row with it is clickable to drill into which contractor packed what.
   function renderLaborCostSection() {
     const isPlainOverview = state.mode === "overview" && state.selectedMachines.length === 0;
     const section = el("laborCostSection");
@@ -831,6 +836,8 @@ const Product = (() => {
 
     Charts.renderLaborCostChart("laborCostChart", months);
 
+    const hasContractual = months.some((m) => m.contractualLaborCostRs != null);
+
     const table = el("laborCostTable");
     table.innerHTML = `
       <thead>
@@ -838,24 +845,40 @@ const Product = (() => {
           <th>Month</th>
           <th class="numeric">Output (${unit})</th>
           <th class="numeric">Man-Hours</th>
+          <th class="numeric">Man-Hours / 1,000 ${unit}</th>
           <th class="numeric">Labor Cost (Rs.)</th>
           <th class="numeric">Cost / 1,000 ${unit}</th>
-          <th class="numeric">Man-Hours / 1,000 ${unit}</th>
+          ${hasContractual ? `
+          <th class="numeric">Contractual Labour Cost (Rs.)</th>
+          <th class="numeric">Contractual Cost / 1,000 ${unit}</th>
+          ` : ""}
         </tr>
       </thead>
       <tbody>
         ${months.map((m) => `
-          <tr>
+          <tr class="${m.contractualLaborCostRs != null ? "clickable-row" : ""}" data-month="${m.month}">
             <td>${m.monthLabel}</td>
             <td class="numeric">${m.output.toLocaleString()}</td>
             <td class="numeric">${m.manHours.toLocaleString()}</td>
+            <td class="numeric">${m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>
             <td class="numeric">${m.laborCost.toLocaleString()}</td>
             <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-            <td class="numeric">${m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>
+            ${hasContractual ? `
+            <td class="numeric">${m.contractualLaborCostRs != null ? m.contractualLaborCostRs.toLocaleString() : "—"}</td>
+            <td class="numeric">${m.contractualCostPerThousandUnits != null ? m.contractualCostPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
+            ` : ""}
           </tr>
         `).join("")}
       </tbody>
     `;
+    if (hasContractual) {
+      table.querySelectorAll("tr[data-month]").forEach((row) => {
+        row.addEventListener("click", () => {
+          const month = months.find((m) => m.month === row.dataset.month);
+          if (month.contractualLaborCostRs != null) openContractualLaborModal(month, unit);
+        });
+      });
+    }
 
     const sharedNote = el("laborCostSharedNote");
     if (summary.shared) {
@@ -942,6 +965,60 @@ const Product = (() => {
       </tbody>
     `;
     Modal.open(el("fgMonthModalOverlay"));
+  }
+
+  // Per-contractor, per-item breakdown for one month -- which contractor
+  // packed what quantity of which item, at what rate, for what amount (see
+  // backend/app/contractor_labor.py). Nimco shows two contractors (one per
+  // pack-size line) since two separate contractors feed it; every other
+  // product with contractor data shows just its one.
+  function openContractualLaborModal(month, unit) {
+    el("contractualLaborModalTitle").textContent = `Contractual labour -- ${month.monthLabel}`;
+    const table = el("contractualLaborModalTable");
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Contractor</th>
+          <th>Item</th>
+          <th class="numeric">Quantity (${unit})</th>
+          <th class="numeric">Rate / Unit (Rs.)</th>
+          <th class="numeric">Amount (Rs.)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${month.contractors.map((c) => {
+          const items = c.items.filter((it) => it.quantity !== 0 || it.amountRs !== 0);
+          return items.map((it, i) => `
+            <tr>
+              <td>${i === 0 ? c.contractor : ""}</td>
+              <td>${it.itemName}</td>
+              <td class="numeric">${it.quantity.toLocaleString()}</td>
+              <td class="numeric">${it.rate != null ? it.rate.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
+              <td class="numeric">${it.amountRs.toLocaleString()}</td>
+            </tr>
+          `).join("");
+        }).join("")}
+        ${month.contractors.map((c) => `
+          <tr class="total-row">
+            <td><strong>${c.contractor} total</strong></td>
+            <td></td>
+            <td class="numeric"><strong>${c.totalQuantity.toLocaleString()}</strong></td>
+            <td></td>
+            <td class="numeric"><strong>${c.totalAmountRs.toLocaleString()}</strong></td>
+          </tr>
+        `).join("")}
+        ${month.contractors.length > 1 ? `
+        <tr class="total-row">
+          <td><strong>All contractors total</strong></td>
+          <td></td>
+          <td class="numeric"><strong>${month.contractors.reduce((sum, c) => sum + c.totalQuantity, 0).toLocaleString()}</strong></td>
+          <td></td>
+          <td class="numeric"><strong>${month.contractors.reduce((sum, c) => sum + c.totalAmountRs, 0).toLocaleString()}</strong></td>
+        </tr>
+        ` : ""}
+      </tbody>
+    `;
+    Modal.open(el("contractualLaborModalOverlay"));
   }
 
   function setBar(suffix, value) {
@@ -1110,6 +1187,7 @@ const Product = (() => {
     Modal.wireOverlay(el("reliabilityModalOverlay"), el("reliabilityModalClose"));
     Modal.wireOverlay(el("loadsheddingModalOverlay"), el("loadsheddingModalClose"));
     Modal.wireOverlay(el("fgMonthModalOverlay"), el("fgMonthModalClose"));
+    Modal.wireOverlay(el("contractualLaborModalOverlay"), el("contractualLaborModalClose"));
 
     el("overviewBtn").addEventListener("click", () => {
       state.mode = "overview";

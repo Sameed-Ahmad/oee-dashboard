@@ -1,6 +1,6 @@
 """Labor cost per unit of output (packets for Packing Dept, KG for
 Production Dept), read from the standalone monthly Labor Cost Analysis
-workbook (backend/data/*Labor Cost Analysis*.xlsx) -- entirely separate
+workbook (backend/data/labour cost/*Labor Cost Analysis*.xlsx) -- entirely separate
 from the day-by-day OEE workbooks parser.py handles, and at a much coarser
 grain (one figure per cost-center line per MONTH, not per day/shift), so
 this is deliberately its own module.
@@ -40,7 +40,9 @@ from pathlib import Path
 
 import openpyxl
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+from .contractor_labor import get_contractual_month
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "labour cost"
 
 REPORT_SHEET_NAME = "Shahi-1 Report"
 
@@ -205,8 +207,14 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
 
         mon, year = header.split("-")
         month_idx = MONTH_ABBR.index(mon)
+        month_key = f"{year}-{month_idx + 1:02d}"
+
+        contractual = get_contractual_month(slug, month_key)
+        contractual_cost = contractual["costRs"] if contractual else None
+        contractors = contractual["contractors"] if contractual else []
+
         months_result.append({
-            "month": f"{year}-{month_idx + 1:02d}",
+            "month": month_key,
             "monthLabel": f"{MONTH_NAMES[month_idx]} {year}",
             "manHours": round(total_hours, 1),
             "laborCost": round(total_cost, 2),
@@ -214,6 +222,9 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
             "outputUnit": unit,
             "costPerThousandUnits": round(total_cost / total_output * 1000, 2),
             "manHoursPerThousandUnits": round(total_hours / total_output * 1000, 3),
+            "contractualLaborCostRs": contractual_cost,
+            "contractualCostPerThousandUnits": round(contractual_cost / total_output * 1000, 2) if contractual_cost is not None else None,
+            "contractors": contractors,
         })
 
     return {
@@ -311,7 +322,7 @@ def compute_output_reconciliation(slug: str, records: list[dict]) -> dict | None
     }
 
 
-def compute_department_labor_cost(department: str) -> dict | None:
+def compute_department_labor_cost(department: str, product_slugs: list[str] | None = None) -> dict | None:
     """Total Labor Cost (Rs.) -- and an accurate Cost per 1,000 units --
     for an entire department ("Packing" or "Production"), summed across
     every month filled in on the source workbook so far. Reads the
@@ -324,6 +335,17 @@ def compute_department_labor_cost(department: str) -> dict | None:
     costPerThousandUnits is computed from these same summed totals (total
     Rs. / total output), not by averaging each month's own ratio, so it's
     correctly output-weighted across months of very different volume.
+
+    If `product_slugs` is given (every product under this department), the
+    per-item contractor bills (contractor_labor.py) are also summed in for
+    those same months and folded into totalRs/costPerThousandUnits --
+    unlike compute_labor_cost_summary's per-PRODUCT figures (which keep
+    the two deliberately separate so a product's own table can show both),
+    this department-wide card is meant to read as one genuine "what did
+    labor cost us" total, so here they're combined. laborOnlyRs/
+    contractualRs are also returned individually for transparency.
+    Omitting product_slugs (or passing none) leaves contractualRs at 0,
+    i.e. totalRs == laborOnlyRs, same as before this parameter existed.
 
     Returns None if the workbook, either table, or this department's row
     in either can't be found, or no month has both cost and output
@@ -369,10 +391,21 @@ def compute_department_labor_cost(department: str) -> dict | None:
     if not months_included:
         return None
 
+    contractual_cost = 0.0
+    for slug in product_slugs or []:
+        for month_key in months_included:
+            contractual_month = get_contractual_month(slug, month_key)
+            if contractual_month:
+                contractual_cost += contractual_month["costRs"]
+
+    combined_cost = total_cost + contractual_cost
+
     return {
-        "totalRs": round(total_cost, 2),
+        "totalRs": round(combined_cost, 2),
+        "laborOnlyRs": round(total_cost, 2),
+        "contractualRs": round(contractual_cost, 2),
         "firstMonth": months_included[0],
         "lastMonth": months_included[-1],
-        "costPerThousandUnits": round(total_cost / total_output * 1000, 2),
+        "costPerThousandUnits": round(combined_cost / total_output * 1000, 2),
         "outputUnit": unit,
     }

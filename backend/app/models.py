@@ -130,6 +130,21 @@ class ProductGasSummary(BaseModel):
     months: list[GasMonthEntry]
 
 
+class ContractorItemEntry(BaseModel):
+    itemCode: str | None
+    itemName: str
+    quantity: float
+    rate: float | None  # Rs. per unit -- derived (amountRs / quantity) where the sheet's own cell was blank
+    amountRs: float
+
+
+class ContractorBreakdownEntry(BaseModel):
+    contractor: str
+    totalQuantity: float
+    totalAmountRs: float
+    items: list[ContractorItemEntry]
+
+
 class LaborCostMonthEntry(BaseModel):
     month: str  # "2026-01"
     monthLabel: str  # "January 2026"
@@ -139,6 +154,12 @@ class LaborCostMonthEntry(BaseModel):
     outputUnit: str  # "Packets" | "KG"
     costPerThousandUnits: float  # Rs. per 1,000 units of output (more readable than the raw per-unit fraction)
     manHoursPerThousandUnits: float
+    # Standalone figure from the per-item contractor bills (contractor_labor.py) --
+    # NOT part of laborCost/costPerThousandUnits above. None if no contractor bill
+    # data covers this product+month (e.g. Ishida, which has no contractor file).
+    contractualLaborCostRs: float | None = None
+    contractualCostPerThousandUnits: float | None = None
+    contractors: list[ContractorBreakdownEntry] = []
 
 
 class ProductLaborCostSummary(BaseModel):
@@ -311,7 +332,9 @@ class DepartmentGasCostGroup(BaseModel):
 
 
 class DepartmentCostSummary(BaseModel):
-    totalLaborCostRs: float | None  # None if no labor-cost data found for this department
+    totalLaborCostRs: float | None  # None if no labor-cost data found for this department -- otherwise laborOnlyCostRs + contractualLaborCostRs combined
+    laborOnlyCostRs: float | None  # the Labor Cost Analysis workbook's own department total, before adding contractual bills
+    contractualLaborCostRs: float | None  # summed from contractor_labor.py across this department's products; 0 (not None) if none of them has a contractor file
     laborCostFirstMonth: str | None  # "2026-01"
     laborCostLastMonth: str | None  # "2026-08"
     laborCostPerThousandUnits: float | None  # output-weighted, from the workbook's own department totals

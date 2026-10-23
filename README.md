@@ -304,14 +304,39 @@ OEE workbooks `parser.py` handles, feed a set of cost/reconciliation panels
 layered on top of the OEE data:
 
 - **Labor cost** (`backend/app/labor_cost.py`, reading
-  `backend/data/*Labor Cost Analysis*.xlsx`'s "Shahi-1 Report" sheet) --
-  monthly Output/Man-Hours/Labor Cost per cost-center line, summed where a
-  workbook line covers more than one dashboard product (e.g. Nimco's "R-10"
-  + "R-20 / R-30"). Surfaced two ways: a **Total labor cost** card on every
-  product's Overview page, and on the unit page's department cards as
-  **Labor cost / 1,000 Packets** (Packing) or **Labor cost / 1,000 KG**
-  (Production) -- output-weighted (`total cost ÷ total output × 1000`), not
-  a plain monthly average.
+  `backend/data/labour cost/*Labor Cost Analysis*.xlsx`'s "Shahi-1 Report"
+  sheet) -- monthly Output/Man-Hours/Labor Cost per cost-center line,
+  summed where a workbook line covers more than one dashboard product
+  (e.g. Nimco's "R-10" + "R-20 / R-30"). Surfaced on every product's
+  Overview page as a **Labor Cost table** (Output, Man-Hours, Man-Hours/
+  1,000 units, Labor Cost, Cost/1,000 units).
+- **Contractual labour cost** (`backend/app/contractor_labor.py`, reading
+  `backend/data/labour cost/*Packing Contractor Bill*.xlsx` -- one
+  workbook per contractor, one sheet per 15-day billing period) -- a
+  second, separately-sourced cost figure for the 3 Packing Dept products
+  with a contractor file (Fry-O, Pops, Nimco -- Nimco sums two
+  contractors, one per pack-size line; Ishida has none yet). On the SAME
+  product's Labor Cost table, this stays its own two columns
+  (**Contractual Labour Cost (Rs.)** / **Contractual Cost / 1,000
+  units**) rather than being merged into Labor Cost/Cost per 1,000 units
+  -- that workbook's own "Contractual Workers" figure is a different,
+  much smaller number for the same product/month and evidently measures
+  something else, so showing both side by side is more honest than
+  reconciling them. Each month's row is clickable to drill into which
+  contractor packed which item, at what rate, for what amount (with a
+  combined total row when more than one contractor fed that product that
+  month). On the unit page's department cards, by contrast, **Total
+  labor cost** and **Labor cost / 1,000 units** ARE the combined figure
+  (Labor Cost workbook total + every one of that department's products'
+  contractual cost) -- `compute_department_labor_cost`'s `product_slugs`
+  parameter controls this: the per-product Overview page calls it without
+  product_slugs (keeping the two separate), the department cards call it
+  with the department's product list (combining them), since a card
+  meant to answer "what did labor cost us" should read as one real total.
+  Only Jan-2026 through Aug-2026 shows up today (matching the Labor Cost
+  Analysis workbook's current coverage), even though these bills already
+  run through Oct-2026 -- no hardcoded cutoff, it just starts showing
+  more the moment that workbook is extended.
 - **Electricity** (`backend/app/electricity.py`, reading
   `backend/data/utility/Energy Consumption Report -2026.xlsx`'s
   "Electricity Consumption-26" sheet) -- Shahi-1's own monthly share

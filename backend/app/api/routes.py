@@ -470,9 +470,9 @@ def _department_cost_summary(dept) -> DepartmentCostSummary:
     matching its own spelling exactly.
     """
     workbook_label = dept.display_name.replace(" Dept", "")
-    labor = compute_department_labor_cost(workbook_label)
-
     product_slugs = [p.slug for p in products_in_department(dept.slug)]
+    labor = compute_department_labor_cost(workbook_label, product_slugs)
+
     records_by_slug = {slug: _get_records(slug) for slug in product_slugs}
     gas_groups = compute_department_gas_cost_per_thousand_units(product_slugs, records_by_slug)
 
@@ -480,6 +480,8 @@ def _department_cost_summary(dept) -> DepartmentCostSummary:
 
     return DepartmentCostSummary(
         totalLaborCostRs=labor["totalRs"] if labor else None,
+        laborOnlyCostRs=labor["laborOnlyRs"] if labor else None,
+        contractualLaborCostRs=labor["contractualRs"] if labor else None,
         laborCostFirstMonth=labor["firstMonth"] if labor else None,
         laborCostLastMonth=labor["lastMonth"] if labor else None,
         laborCostPerThousandUnits=labor["costPerThousandUnits"] if labor else None,

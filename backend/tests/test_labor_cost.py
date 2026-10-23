@@ -107,3 +107,63 @@ def test_department_labor_cost_per_thousand_units_is_output_weighted():
 
 def test_department_labor_cost_unknown_department_returns_none():
     assert compute_department_labor_cost("Not A Real Department") is None
+
+
+def test_fryo_contractual_labor_cost_merged_in():
+    """Contractual labour cost is a standalone figure layered on top from
+    the separate per-item contractor bills (contractor_labor.py) -- not
+    part of laborCost/costPerThousandUnits above, computed against the
+    SAME output figure so the two "/1,000 units" columns share one basis."""
+    result = compute_labor_cost_summary("fryo")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["contractualLaborCostRs"] == 1060974.0
+    assert jan["contractualCostPerThousandUnits"] == round(1060974.0 / jan["output"] * 1000, 2)
+    assert [c["contractor"] for c in jan["contractors"]] == ["Mr. Usman"]
+
+
+def test_ishida_has_no_contractual_labor_cost():
+    """No contractor bill file exists for Ishida -- its contractual columns
+    must come back None/empty, not a crash or a phantom zero."""
+    result = compute_labor_cost_summary("ishida")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["contractualLaborCostRs"] is None
+    assert jan["contractualCostPerThousandUnits"] is None
+    assert jan["contractors"] == []
+
+
+def test_department_labor_cost_folds_in_contractual_cost_when_slugs_given():
+    """Passing product_slugs (as the unit-page cards do) must fold the
+    per-item contractor bills into totalRs/costPerThousandUnits -- the
+    department card is meant to read as one genuine total, unlike
+    compute_labor_cost_summary's per-product figures which keep the two
+    separate on purpose."""
+    packing_only = compute_department_labor_cost("Packing")
+    packing_combined = compute_department_labor_cost("Packing", ["fryo", "ishida", "pops", "nimco"])
+    assert packing_combined["laborOnlyRs"] == packing_only["totalRs"]
+    assert packing_combined["contractualRs"] > 0
+    assert packing_combined["totalRs"] == round(packing_combined["laborOnlyRs"] + packing_combined["contractualRs"], 2)
+    assert packing_combined["costPerThousandUnits"] > packing_only["costPerThousandUnits"]
+
+
+def test_department_labor_cost_contractual_is_zero_without_matching_slugs():
+    """Production Dept has no contractor bill files at all -- its
+    contractual figure must come back a real 0, not None, so totalRs
+    still equals laborOnlyRs exactly."""
+    production = compute_department_labor_cost("Production", ["hnc-1", "hnc-3", "kuiper", "extruder"])
+    assert production["contractualRs"] == 0.0
+    assert production["totalRs"] == production["laborOnlyRs"]
+
+
+def test_nimco_contractual_cost_sums_both_contractors_except_when_one_has_no_bill():
+    """Nimco is fed by two separate contractors (Ghulam Nabi = R-10, Basit
+    Enterprise = R-20); Basit has no Jan-2026 bill at all, so that month
+    must show Ghulam Nabi's real figure alone, not None and not zero."""
+    result = compute_labor_cost_summary("nimco")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert [c["contractor"] for c in jan["contractors"]] == ["Mr. Asif Ghulam Nabi"]
+    assert jan["contractualLaborCostRs"] == jan["contractors"][0]["totalAmountRs"]
+
+    feb = next(m for m in result["months"] if m["month"] == "2026-02")
+    names = {c["contractor"] for c in feb["contractors"]}
+    assert names == {"Mr. Asif Ghulam Nabi", "Mr.Allah Datta (Basit Enterprise)"}
+    assert feb["contractualLaborCostRs"] == round(sum(c["totalAmountRs"] for c in feb["contractors"]), 2)
