@@ -400,54 +400,6 @@ layered on top of the OEE data:
   red if that month's gap looks unusual); clicking a month opens its
   day-by-day breakdown.
 
-## Shahi 3's cost data
-
-Shahi 3 reads from an entirely different, simpler source than Shahi 1:
-`backend/app/shahi3_cost.py`, parsing `backend/data/Shahi 3/Labour and
-Energy/Dept.Wise Cost Sheet Labor & Energy S3(<Mon>-26).xlsx` -- one
-workbook per month (currently Aug-26, Sep-26), each already combining
-labor + electricity (+ gas, Production only) in one file instead of
-Shahi 1's three separate workbooks. Reads each file's "Packing" sheet
-(absolute Total Packs/Payroll/Electricity Cost per "Total <X> Department"
-subtotal row) and "Plants" sheet (same idea, Production side, one row
-per department already at summary grain), plus the "Expense Detail LHR"
-sheet's own "FACTORY ELECTRICITY"/"FACTORY APPLIANCE GAS CHARGES" general-
-ledger lines for the facility-wide total used on the company comparison
-page. Column headers are found by their own text (not hardcoded letters),
-same philosophy as `parser.py`.
-
-The cost sheet's own department labels don't literally match the
-dashboard's product slugs -- this mapping was confirmed with the person
-running the dashboard, not guessed (see the module's own docstring for
-the full reasoning and the real data-quality issue each decision
-resolves):
-
-| Cost-sheet department | Product slug | Note |
-|---|---|---|
-| "BB R10" | `lhr-nimco-1` | the R-10 packing line |
-| "BB R20/B30/SN50" | `lhr-nimco-2` | the R-20 line; no OEE file uploaded yet |
-| "Ishida" (Packing sheet) / "Saminato" (Summary sheet) | `lhr-siminato` | same line, confirmed via an identical Rs. figure in both of the workbook's own tabs |
-| "FryO" + "Pops" (summed) | `lhr-snacks` | NOT two products -- these two Packing-sheet rows together ARE Shahi 3's "Snacks" line (WheatO/Popstar/Tacoz/Thunder Pops under "Pops", Fry O itself under "FryO"), same pattern as Shahi 1's Nimco summing its own R-10 + R-20 |
-| "Production - H&C - 2" (Plants sheet) | `shahi3-hnc-2-lhr` | |
-| "Production - Pops" (Plants sheet) | `shahi3-extruder` | by analogy with Shahi 1's own Extruder line being filed as "Production - Pops" there -- an inference, not independently confirmed |
-
-"Production - Batch Frying" / "Mixing" / "Flavor Grinding" / "Sorting"
-have no confirmed product mapping yet and are left out entirely rather
-than guessed onto one of the existing Production stub slugs (hnc-1/
-hnc-3/kuiper/nomak-para) -- their cost is real but currently unsurfaced.
-
-Gas Cost/Kg is only ever filled in on the Plants sheet's own facility
-"Total" row (every individual department shows 0), so it's exposed only
-at the whole-Shahi-3-Production grain via `compute_shahi3_facility_cost`,
-not per product. Man-hours aren't tracked in this source at all, so
-Shahi 3 products' Labor Cost table omits that column entirely (see
-`LaborCostMonthEntry.manHours`, nullable for exactly this reason) rather
-than showing a fake zero. Shahi 1's own Electricity/Gas & LPG unit-page
-panels (source-by-source K-Electric/Gas Generator/etc. breakdown) aren't
-replicated for Shahi 3 -- `GET /units/shahi-3/electricity` and
-`/gas-lpg` both deliberately 404 rather than silently serving Shahi 1's
-data under a Shahi-3 request.
-
 ## Company overview (Shahi 1 vs. Shahi 3)
 
 `GET /company/compare` (`company.js`, the `#/company` landing page) is

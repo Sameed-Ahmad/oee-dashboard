@@ -29,8 +29,8 @@ with the real absolute figures this module actually reads:
 Department-label -> dashboard-product-slug mapping (confirmed with the
 person running this dashboard, 2026-10-27):
 
-- "BB R10"            -> lhr-nimco-1 (the R-10 packing line)
-- "BB R20/B30/SN50"   -> lhr-nimco-2 (the R-20 packing line; no raw OEE
+- "BB R20/B30/SN50"   -> lhr-nimco-1 (the R-20 packing line)
+- "BB R10"            -> lhr-nimco-2 (the R-10 packing line; no raw OEE
   file uploaded for it yet -- cost-only until one is)
 - "Ishida" (this sheet) / "Saminato" (the Summary sheet's OWN label for
   the exact same line -- confirmed via an identical Rs. figure in both
@@ -87,8 +87,8 @@ MONTH_NAMES = [
 # (payroll, electricity cost, packs, weight) are SUMMED before any ratio
 # is recomputed -- never averaging the two lines' own per-unit ratios.
 PACKING_LABEL_TO_SLUGS: dict[str, str] = {
-    "total bb r10 department": "lhr-nimco-1",
-    "total bb r20/b30/sn50 department": "lhr-nimco-2",
+    "total bb r20/b30/sn50 department": "lhr-nimco-1",
+    "total bb r10 department": "lhr-nimco-2",
     "total ishida department": "lhr-siminato",
     "total fryo department": "lhr-snacks",
     "total pops department": "lhr-snacks",

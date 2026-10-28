@@ -55,20 +55,19 @@ def test_facility_cost_excludes_april_due_to_source_data_error():
 
 def test_lhr_nimco_1_august_matches_hand_calculation():
     """Hand-verified against the source workbook's "Packing" sheet, "Total
-    BB R10 Department" row: Total Packs 14,248,512, Total Payroll
-    1,898,694 (no Packing Contractor Payment that month) -- and
-    cross-checked against the same file's own "Aug-2026 Summary" tab,
-    which independently reports Labor Cost/Pack = 0.13325559890043254
-    (x1000 = 133.26, matching exactly). Electricity isn't part of this
-    per-product figure -- it's unit-wide, see
+    BB R20/B30/SN50 Department" row: Total Packs 4,058,220, Total
+    Payroll 987,969 -- and cross-checked against the same file's own
+    "Aug-2026 Summary" tab, which independently reports Labor Cost/Pack =
+    0.24344885195972618 (x1000 = 243.45, matching exactly). Electricity
+    isn't part of this per-product figure -- it's unit-wide, see
     test_facility_cost_matches_expense_detail_sheet."""
     result = compute_shahi3_cost_summary("lhr-nimco-1")
     assert result is not None
     aug = next(m for m in result["months"] if m["month"] == "2026-08")
-    assert aug["output"] == 14248512.0
+    assert aug["output"] == 4058220.0
     assert aug["outputUnit"] == "Packets"
-    assert aug["laborCost"] == 1898694.0
-    assert aug["costPerThousandUnits"] == 133.26
+    assert aug["laborCost"] == 987969.0
+    assert aug["costPerThousandUnits"] == 243.45
 
 
 def test_lhr_snacks_sums_fryo_and_pops_lines():
@@ -134,8 +133,8 @@ def test_unmapped_production_departments_return_none():
 
 def test_lhr_nimco_2_has_no_oee_data_but_does_have_cost_data():
     """No raw OEE workbook has been uploaded for Nimco-2 yet, but its
-    cost-sheet line (BB R20/B30/SN50) is real and already mapped --
-    Jan-26 through Sep-26 now that the full range has been uploaded."""
+    cost-sheet line (BB R10) is real and already mapped -- Jan-26
+    through Sep-26 now that the full range has been uploaded."""
     result = compute_shahi3_cost_summary("lhr-nimco-2")
     assert result is not None
     assert len(result["months"]) == 9
