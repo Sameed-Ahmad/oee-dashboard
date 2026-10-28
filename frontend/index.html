@@ -11,14 +11,14 @@
 <div class="app">
 
   <header class="header">
-    <div class="header-left">
+    <a class="header-left" href="#/company" id="headerHomeLink">
       <img src="assets/shahi-logo.png" alt="Shahi Enterprises" class="logo" id="logoImg"
            onerror="this.replaceWith(Object.assign(document.createElement('div'), {className:'logo-fallback', textContent:'SE'}))">
       <div class="header-title" id="headerTitleBlock">
         <h1 id="headerHeading">Shahi Enterprises</h1>
         <div class="subtitle" id="headerSubtitle">OEE Dashboard</div>
       </div>
-    </div>
+    </a>
     <div class="header-right">
       <div id="headerRightDynamic"></div>
       <button class="theme-toggle" id="themeToggle" type="button" title="Toggle dark mode">&#9789;</button>
@@ -26,10 +26,35 @@
   </header>
 
   <!-- ============================================================ -->
-  <!-- UNIT OVERVIEW PAGE (default landing page)                      -->
+  <!-- COMPANY OVERVIEW PAGE (default landing page)                   -->
   <!-- ============================================================ -->
-  <div id="unitPage">
+  <div id="companyPage">
     <div class="dept-hero">
+      <h2>Shahi Enterprises</h2>
+      <div class="dept-sub">Comparing units with data</div>
+    </div>
+
+    <div class="product-cards" id="unitCompareCards"></div>
+
+    <section class="panel gas-section" id="companyElectricitySection" style="display:none">
+      <h2>Electricity cost -- Shahi 1 vs. Shahi 3</h2>
+      <div class="panel-sub">Monthly facility electricity cost, side by side. A blank bar means that unit has no data for that month yet, not zero cost.</div>
+      <div class="chart-wrap"><canvas id="companyElectricityChart"></canvas></div>
+    </section>
+
+    <section class="panel gas-section" id="companyGasSection" style="display:none">
+      <h2>Gas cost -- Shahi 1 vs. Shahi 3</h2>
+      <div class="panel-sub">Monthly facility gas cost, side by side (Shahi 1: Gas + LPG combined; Shahi 3: Factory Appliance Gas Charges -- see each unit's own page for how these are sourced).</div>
+      <div class="chart-wrap"><canvas id="companyGasChart"></canvas></div>
+    </section>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- UNIT OVERVIEW PAGE                                             -->
+  <!-- ============================================================ -->
+  <div id="unitPage" style="display:none">
+    <div class="dept-hero">
+      <a href="#/company" class="back-link" id="backToCompanyLink">&lsaquo; Shahi Enterprises</a>
       <h2 id="unitHeading">Shahi 1</h2>
       <div class="dept-sub" id="unitSub">Comparing departments with data in this unit</div>
     </div>
@@ -38,16 +63,22 @@
 
     <section class="panel gas-section" id="electricitySection" style="display:none">
       <h2>Electricity cost</h2>
-      <div class="panel-sub">Shahi 1's own monthly units and cost, with Packing &amp; Production output in the table below -- click a month row to see the source-by-source breakdown.</div>
+      <div class="panel-sub" id="electricityPanelSub">Monthly units and cost, with Packing &amp; Production output in the table below.</div>
       <div class="chart-wrap"><canvas id="electricityChart"></canvas></div>
       <table class="data-table" id="electricityTable"></table>
     </section>
 
     <section class="panel gas-section" id="gasLpgSection" style="display:none">
       <h2>Gas &amp; LPG cost</h2>
-      <div class="panel-sub">Shahi 1's own direct-production Gas and LPG use -- not the Gas Generator (already counted under Electricity) or Wood Pellets (no Shahi-only split available yet).</div>
+      <div class="panel-sub" id="gasLpgPanelSub">Direct-production Gas and LPG use -- not the Gas Generator (already counted under Electricity) or Wood Pellets (no Shahi-only split available yet).</div>
       <div class="chart-wrap"><canvas id="gasLpgChart"></canvas></div>
       <table class="data-table" id="gasLpgTable"></table>
+    </section>
+
+    <section class="panel gas-section" id="overheadSection" style="display:none">
+      <h2>Manufacturing overhead</h2>
+      <div class="panel-sub">Each department's own direct labor + electricity cost, plus the whole-of-unit Support Department cost (Factory Admin &amp; HR, Maintenance, FG Store, Quality Assurance, RM Store, Tech. Store, shared equipment) added on top.</div>
+      <div id="overheadDepartments"></div>
     </section>
   </div>
 
@@ -274,6 +305,7 @@
 <script src="js/utils.js"></script>
 <script src="js/calendar.js"></script>
 <script src="js/charts.js"></script>
+<script src="js/company.js"></script>
 <script src="js/unit.js"></script>
 <script src="js/department.js"></script>
 <script src="js/product.js"></script>

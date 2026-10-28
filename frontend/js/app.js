@@ -1,15 +1,14 @@
-// Top-level router: decides which of the three pages (unit overview /
-// department overview / single-product dashboard) to show, based on the URL
-// hash, and wires the one truly global control (dark-mode toggle).
-// Everything else lives in unit.js / department.js / product.js.
+// Top-level router: decides which of the four pages (company overview /
+// unit overview / department overview / single-product dashboard) to show,
+// based on the URL hash, and wires the one truly global control (dark-mode
+// toggle). Everything else lives in company.js / unit.js / department.js /
+// product.js.
 //
-// NOTE: only Shahi 1 (Packing Dept: Fry-O/Pops/Ishida/Nimco; Production
-// Dept: Coated Peanut/Namak Para/HNC 1/HNC 3/Extruder/Kuiper) has data
-// today, so "shahi-1" is hardcoded as the landing page. Once other units
-// have data, a real company/unit switcher would hook in here --
-// Api.getCompany() already returns the full org chart with per-product
-// hasData flags, ready for that.
-const DEFAULT_UNIT_SLUG = "shahi-1";
+// NOTE: only Shahi 1 and Shahi 3 have data today, both surfaced via the
+// company landing page (#/company, also the default route). The other
+// units (Zain 1/2) are still excel_dir=None everywhere -- Api.getCompany()
+// already returns the full org chart with per-product hasData flags, ready
+// for whenever they're added to COMPARABLE_UNIT_SLUGS on the backend too.
 
 const el = (id) => document.getElementById(id);
 
@@ -25,10 +24,10 @@ function parseRoute() {
   if (parts[0] === "unit" && parts[1]) {
     return { view: "unit", slug: parts[1] };
   }
-  return { view: "unit", slug: DEFAULT_UNIT_SLUG };
+  return { view: "company" };
 }
 
-const PAGES = ["unitPage", "departmentPage", "productPage"];
+const PAGES = ["companyPage", "unitPage", "departmentPage", "productPage"];
 
 function showPage(id) {
   PAGES.forEach((p) => { el(p).style.display = p === id ? "" : "none"; });
@@ -43,9 +42,12 @@ async function route() {
     } else if (view === "department") {
       showPage("departmentPage");
       await Department.show(slug);
-    } else {
+    } else if (view === "unit") {
       showPage("unitPage");
       await Unit.show(slug);
+    } else {
+      showPage("companyPage");
+      await Company.show();
     }
   } catch (err) {
     console.error(err);

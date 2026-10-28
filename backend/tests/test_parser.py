@@ -156,7 +156,7 @@ def test_aggregate_day_two_shifts():
 @pytest.fixture(scope="module")
 def ishida_parsed():
     if not _has_file(ISHIDA_CONFIG):
-        pytest.skip("Ishida workbook not present in backend/data/raw/ishida/")
+        pytest.skip("Ishida workbook not present in backend/data/Shahi 1/raw/ishida/")
     return parse_workbook(ISHIDA_CONFIG)
 
 
@@ -221,7 +221,7 @@ def test_ishida_all_zero_shift_kept_visible(ishida_parsed):
 @pytest.fixture(scope="module")
 def fryo_parsed():
     if not _has_file(FRYO_CONFIG):
-        pytest.skip("Fry-O workbook not present in backend/data/raw/fryo/")
+        pytest.skip("Fry-O workbook not present in backend/data/Shahi 1/raw/fryo/")
     return parse_workbook(FRYO_CONFIG)
 
 
@@ -273,7 +273,7 @@ def test_fryo_duplicate_sheets_excluded(fryo_parsed):
 @pytest.fixture(scope="module")
 def hnc1_parsed():
     if not _has_file(HNC_1_CONFIG):
-        pytest.skip("HNC 1 workbook not present in backend/data/raw/hnc-1/")
+        pytest.skip("HNC 1 workbook not present in backend/data/Shahi 1/raw/hnc-1/")
     return parse_workbook(HNC_1_CONFIG)
 
 
@@ -328,7 +328,7 @@ def test_hnc1_coincidental_row_match_still_corrected(hnc1_parsed):
 @pytest.fixture(scope="module")
 def kuiper_parsed():
     if not _has_file(KUIPER_CONFIG):
-        pytest.skip("Kuiper workbook not present in backend/data/raw/kuiper/")
+        pytest.skip("Kuiper workbook not present in backend/data/Shahi 1/raw/kuiper/")
     return parse_workbook(KUIPER_CONFIG)
 
 
@@ -352,7 +352,7 @@ def test_kuiper_repeated_product_row_group_time_additive(kuiper_parsed):
 @pytest.fixture(scope="module")
 def hnc3_workbook():
     if not _has_file(HNC_3_CONFIG):
-        pytest.skip("HNC 3 workbook not present in backend/data/raw/hnc-3/")
+        pytest.skip("HNC 3 workbook not present in backend/data/Shahi 1/raw/hnc-3/")
     return openpyxl.load_workbook(resolve_excel_path(HNC_3_CONFIG), data_only=True)
 
 
@@ -368,7 +368,7 @@ def test_hnc3_shifted_header_row(hnc3_workbook):
 @pytest.fixture(scope="module")
 def coated_peanut_parsed():
     if not _has_file(COATED_PEANUT_CONFIG):
-        pytest.skip("Coated Peanut workbook not present in backend/data/raw/coated-peanut/")
+        pytest.skip("Coated Peanut workbook not present in backend/data/Shahi 1/raw/coated-peanut/")
     return parse_workbook(COATED_PEANUT_CONFIG)
 
 
@@ -464,7 +464,7 @@ def test_dedup_combines_two_active_parallel_lines(tmp_path):
 
 @pytest.mark.skipif(
     not all(_has_file(c) for c in ALL_DATA_PRODUCTS),
-    reason="all ten product workbooks must be present in backend/data/raw/",
+    reason="all ten product workbooks must be present in backend/data/Shahi 1/raw/",
 )
 def test_all_ten_workbooks_parse_cleanly():
     for config in ALL_DATA_PRODUCTS:

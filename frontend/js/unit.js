@@ -1,21 +1,24 @@
-// Unit-overview landing page: compares departments within one unit (today,
-// only Shahi 1's Packing vs Production). This is the default landing page,
-// one level above the department-overview page (department.js). Kept light
-// on purpose -- just comparison cards + a ranked chart, no small multiples.
+// Unit-overview page: compares departments within one unit (Packing vs
+// Production). One level below the company landing page (company.js), one
+// level above the department-overview page (department.js). Kept light on
+// purpose -- just comparison cards + a ranked chart, no small multiples.
 const Unit = (() => {
   const el = (id) => document.getElementById(id);
 
   async function show(unitSlug) {
     wireControlsOnce();
-    const [overview, electricity, gasLpg] = await Promise.all([
+    const [overview, electricity, gasLpg, facilityCost, overhead] = await Promise.all([
       Api.getUnitOverview(unitSlug),
       Api.getElectricity(unitSlug),
       Api.getGasLpg(unitSlug),
+      Api.getFacilityCost(unitSlug),
+      Api.getManufacturingOverhead(unitSlug),
     ]);
     renderHeader(overview);
     renderCards(overview);
-    renderElectricitySection(electricity);
-    renderGasLpgSection(gasLpg);
+    renderElectricitySection(electricity, facilityCost);
+    renderGasLpgSection(gasLpg, facilityCost);
+    renderOverheadSection(overhead);
   }
 
   let controlsWired = false;
@@ -105,90 +108,207 @@ const Unit = (() => {
   // backend/app/electricity.py for why only a combined monthly total is
   // available (the source sheet never splits units by source for
   // Shahi 1 specifically, only the combined Zain-1/Shahi-1 total).
-  function renderElectricitySection(electricity) {
+  // Shahi 1 has this rich per-source breakdown; Shahi 3 doesn't (just a
+  // single lump Rs. figure per month, see shahi3_cost.py) -- falls back
+  // to the simpler facilityCost rendering when `electricity` is null.
+  function renderElectricitySection(electricity, facilityCost) {
     const section = el("electricitySection");
-    if (!electricity || electricity.months.length === 0) {
+    if (electricity && electricity.months.length > 0) {
+      section.style.display = "";
+      el("electricityPanelSub").textContent =
+        "This unit's own monthly units and cost, with Packing & Production output in the table below -- click a month row to see the source-by-source breakdown.";
+      const months = electricity.months;
+      Charts.renderElectricityChart("electricityChart", months);
+
+      const table = el("electricityTable");
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th class="numeric">Units Consumed</th>
+            <th class="numeric">Cost (Rs.)</th>
+            <th class="numeric">Share of Facility Total</th>
+            <th class="numeric">Packing Output (Packets)</th>
+            <th class="numeric">Production Output (KG)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${months.map((m) => `
+            <tr class="clickable-row" data-month="${m.month}">
+              <td>${m.monthLabel}</td>
+              <td class="numeric">${m.unitsConsumed.toLocaleString()}</td>
+              <td class="numeric">${formatRs(m.costRs)}</td>
+              <td class="numeric">${m.sharePct != null ? `${m.sharePct}%` : "—"}</td>
+              <td class="numeric">${m.packingOutputUnits != null ? m.packingOutputUnits.toLocaleString() : "—"}</td>
+              <td class="numeric">${m.productionOutputUnits != null ? m.productionOutputUnits.toLocaleString() : "—"}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      `;
+      table.querySelectorAll("tr[data-month]").forEach((row) => {
+        row.addEventListener("click", () => {
+          const month = months.find((m) => m.month === row.dataset.month);
+          openElectricityMonthModal(month);
+        });
+      });
+      return;
+    }
+
+    const months = (facilityCost || {}).months?.filter((m) => m.electricityCostRs != null) || [];
+    if (months.length === 0) {
       section.style.display = "none";
       return;
     }
     section.style.display = "";
-
-    const months = electricity.months;
-    Charts.renderElectricityChart("electricityChart", months);
-
-    const table = el("electricityTable");
-    table.innerHTML = `
+    el("electricityPanelSub").textContent =
+      "This unit's own monthly facility electricity cost, with Packing & Production output in the table below.";
+    Charts.renderSingleCostChart("electricityChart", months, "electricityCostRs", "Electricity cost (Rs.)", "--gold");
+    el("electricityTable").innerHTML = `
       <thead>
         <tr>
           <th>Month</th>
-          <th class="numeric">Units Consumed</th>
-          <th class="numeric">Cost (Rs.)</th>
-          <th class="numeric">Share of Facility Total</th>
+          <th class="numeric">Electricity Cost (Rs.)</th>
           <th class="numeric">Packing Output (Packets)</th>
           <th class="numeric">Production Output (KG)</th>
         </tr>
       </thead>
       <tbody>
         ${months.map((m) => `
-          <tr class="clickable-row" data-month="${m.month}">
+          <tr>
             <td>${m.monthLabel}</td>
-            <td class="numeric">${m.unitsConsumed.toLocaleString()}</td>
-            <td class="numeric">${formatRs(m.costRs)}</td>
-            <td class="numeric">${m.sharePct != null ? `${m.sharePct}%` : "—"}</td>
+            <td class="numeric">${formatRs(m.electricityCostRs)}</td>
             <td class="numeric">${m.packingOutputUnits != null ? m.packingOutputUnits.toLocaleString() : "—"}</td>
             <td class="numeric">${m.productionOutputUnits != null ? m.productionOutputUnits.toLocaleString() : "—"}</td>
           </tr>
         `).join("")}
       </tbody>
     `;
-    table.querySelectorAll("tr[data-month]").forEach((row) => {
-      row.addEventListener("click", () => {
-        const month = months.find((m) => m.month === row.dataset.month);
-        openElectricityMonthModal(month);
-      });
-    });
   }
 
   // Shahi 1's own direct-production Gas (m3) and LPG (KG) use -- a
   // separate fuel-use report from Electricity's Gas Generator figure
   // (see backend/app/electricity.py for why those aren't the same
-  // thing, and why Wood Pellets isn't shown here at all yet).
-  function renderGasLpgSection(gasLpg) {
+  // thing, and why Wood Pellets isn't shown here at all yet). Shahi 3
+  // again falls back to a single lump Gas Rs. figure per month (see
+  // renderElectricitySection above for the same pattern).
+  function renderGasLpgSection(gasLpg, facilityCost) {
     const section = el("gasLpgSection");
-    if (!gasLpg || gasLpg.months.length === 0) {
+    if (gasLpg && gasLpg.months.length > 0) {
+      section.style.display = "";
+      el("gasLpgPanelSub").textContent =
+        "This unit's own direct-production Gas and LPG use -- not the Gas Generator (already counted under Electricity) or Wood Pellets (no Shahi-only split available yet).";
+      const months = gasLpg.months;
+      Charts.renderGasLpgChart("gasLpgChart", months);
+
+      const table = el("gasLpgTable");
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th class="numeric">Gas (m&sup3;)</th>
+            <th class="numeric">Gas Cost (Rs.)</th>
+            <th class="numeric">LPG (KG)</th>
+            <th class="numeric">LPG Cost (Rs.)</th>
+            <th class="numeric">Total Cost (Rs.)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${months.map((m) => `
+            <tr>
+              <td>${m.monthLabel}</td>
+              <td class="numeric">${m.gasM3 != null ? m.gasM3.toLocaleString() : "—"}</td>
+              <td class="numeric">${m.gasCostRs != null ? formatRs(m.gasCostRs) : "—"}</td>
+              <td class="numeric">${m.lpgKg != null ? m.lpgKg.toLocaleString() : "—"}</td>
+              <td class="numeric">${m.lpgCostRs != null ? formatRs(m.lpgCostRs) : "—"}</td>
+              <td class="numeric">${formatRs(m.totalCostRs)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      `;
+      return;
+    }
+
+    const months = (facilityCost || {}).months?.filter((m) => m.gasCostRs != null) || [];
+    if (months.length === 0) {
       section.style.display = "none";
       return;
     }
     section.style.display = "";
-
-    const months = gasLpg.months;
-    Charts.renderGasLpgChart("gasLpgChart", months);
-
-    const table = el("gasLpgTable");
-    table.innerHTML = `
+    el("gasLpgPanelSub").textContent =
+      "This unit's own monthly facility gas cost.";
+    Charts.renderSingleCostChart("gasLpgChart", months, "gasCostRs", "Gas cost (Rs.)", "--maroon");
+    el("gasLpgTable").innerHTML = `
       <thead>
         <tr>
           <th>Month</th>
-          <th class="numeric">Gas (m&sup3;)</th>
           <th class="numeric">Gas Cost (Rs.)</th>
-          <th class="numeric">LPG (KG)</th>
-          <th class="numeric">LPG Cost (Rs.)</th>
-          <th class="numeric">Total Cost (Rs.)</th>
+          <th class="numeric">Production Output (KG)</th>
         </tr>
       </thead>
       <tbody>
         ${months.map((m) => `
           <tr>
             <td>${m.monthLabel}</td>
-            <td class="numeric">${m.gasM3 != null ? m.gasM3.toLocaleString() : "—"}</td>
-            <td class="numeric">${m.gasCostRs != null ? formatRs(m.gasCostRs) : "—"}</td>
-            <td class="numeric">${m.lpgKg != null ? m.lpgKg.toLocaleString() : "—"}</td>
-            <td class="numeric">${m.lpgCostRs != null ? formatRs(m.lpgCostRs) : "—"}</td>
-            <td class="numeric">${formatRs(m.totalCostRs)}</td>
+            <td class="numeric">${formatRs(m.gasCostRs)}</td>
+            <td class="numeric">${m.productionOutputUnits != null ? m.productionOutputUnits.toLocaleString() : "—"}</td>
           </tr>
         `).join("")}
       </tbody>
     `;
+  }
+
+  // Shahi 3 only -- see backend/app/shahi3_cost.py's
+  // compute_shahi3_manufacturing_overhead. One sub-block per department
+  // (built dynamically since the chart/table need their own canvas/table
+  // ids per department), each a stacked bar (department's own cost +
+  // Support Department's cost) plus a table with the same breakdown.
+  function renderOverheadSection(overhead) {
+    const section = el("overheadSection");
+    if (!overhead || overhead.departments.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+
+    const container = el("overheadDepartments");
+    container.innerHTML = overhead.departments.map((d) => `
+      <div class="overhead-dept-block">
+        <h3>${d.displayName}</h3>
+        <div class="chart-wrap"><canvas id="overheadChart-${d.departmentSlug}"></canvas></div>
+        <table class="data-table" id="overheadTable-${d.departmentSlug}"></table>
+      </div>
+    `).join("");
+
+    overhead.departments.forEach((d) => {
+      const months = d.months;
+      const unit = months[0].outputUnit;
+      Charts.renderOverheadChart(`overheadChart-${d.departmentSlug}`, months);
+
+      el(`overheadTable-${d.departmentSlug}`).innerHTML = `
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th class="numeric">Output (${unit})</th>
+            <th class="numeric">Department Cost (Rs.)</th>
+            <th class="numeric">Support Dept Cost (Rs.)</th>
+            <th class="numeric">Total Overhead Cost (Rs.)</th>
+            <th class="numeric">Cost / 1,000 ${unit}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${months.map((m) => `
+            <tr>
+              <td>${m.monthLabel}</td>
+              <td class="numeric">${m.output.toLocaleString()}</td>
+              <td class="numeric">${formatRs(m.departmentCostRs)}</td>
+              <td class="numeric">${formatRs(m.supportCostRs)}</td>
+              <td class="numeric">${formatRs(m.totalOverheadCostRs)}</td>
+              <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      `;
+    });
   }
 
   // Source-by-source drill-down for one month: each of the 4 power

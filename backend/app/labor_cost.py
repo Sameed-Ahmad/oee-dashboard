@@ -42,7 +42,7 @@ import openpyxl
 
 from .contractor_labor import get_contractual_month
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "labour cost"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "labour cost"
 
 REPORT_SHEET_NAME = "Shahi-1 Report"
 

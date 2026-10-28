@@ -17,6 +17,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.cache import save_cache  # noqa: E402
+from app.config import processed_cache_path  # noqa: E402
 from app.parser import parse_workbook  # noqa: E402
 from app.products.registry import PRODUCTS, ProductConfig  # noqa: E402
 
@@ -47,7 +48,7 @@ def build_one(config: ProductConfig) -> None:
         print(f"  Machine/line breakdown: {', '.join(sorted(groups.keys()))}")
 
     save_cache(config.slug, result.records, result.errors, groups)
-    print(f"  Wrote {len(result.records)} records to backend/data/processed/{config.slug}.json")
+    print(f"  Wrote {len(result.records)} records to {processed_cache_path(config.slug)}")
     print()
 
 

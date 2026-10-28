@@ -561,6 +561,154 @@ const Charts = (() => {
     });
   }
 
+  // months: [{monthLabel, departmentCostRs, supportCostRs}] -- stacked bar,
+  // the department's own direct cost at the bottom and Support
+  // Department's cost stacked on top, so the bar's total height is the
+  // fully-loaded overhead cost for that month (see
+  // shahi3_cost.compute_shahi3_manufacturing_overhead).
+  function renderOverheadChart(canvasId, months) {
+    destroy(canvasId);
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            label: "Department cost (Rs.)",
+            data: months.map((m) => m.departmentCostRs),
+            backgroundColor: cssVar("--maroon"),
+            borderWidth: 0,
+            stack: "overhead",
+          },
+          {
+            label: "Support Dept cost (Rs.)",
+            data: months.map((m) => m.supportCostRs),
+            backgroundColor: cssVar("--gold"),
+            borderWidth: 0,
+            stack: "overhead",
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { stacked: true, ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            stacked: true,
+            min: 0,
+            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+        },
+      },
+    });
+  }
+
+  // months: [{monthLabel, <costKey>}] -- a single Rs. series, for units
+  // with only a lump facility-wide cost figure and no richer breakdown
+  // to show alongside it (see shahi3_cost.py / UnitFacilityCostSummary).
+  function renderSingleCostChart(canvasId, months, costKey, label, colorVar) {
+    destroy(canvasId);
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            label,
+            data: months.map((m) => m[costKey]),
+            backgroundColor: cssVar(colorVar),
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            min: 0,
+            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+        },
+      },
+    });
+  }
+
+  // months: [{monthLabel, shahi1Rs, shahi3Rs}] -- side-by-side grouped
+  // bars, one axis (both series are Rs.), null bars where a unit has no
+  // data that month (Chart.js just skips drawing that bar, not a 0).
+  function renderUnitCompareChart(canvasId, months) {
+    destroy(canvasId);
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    instances[canvasId] = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: months.map((m) => m.monthLabel),
+        datasets: [
+          {
+            label: "Shahi 1 (Rs.)",
+            data: months.map((m) => m.shahi1Rs),
+            backgroundColor: cssVar("--maroon"),
+            borderWidth: 0,
+          },
+          {
+            label: "Shahi 3 (Rs.)",
+            data: months.map((m) => m.shahi3Rs),
+            backgroundColor: cssVar("--gold"),
+            borderWidth: 0,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
+          tooltip: {
+            callbacks: {
+              label: (item) => `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { font: baseFont() }, grid: { display: false } },
+          y: {
+            min: 0,
+            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
+            ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
+            grid: { color: cssVar("--border") },
+          },
+        },
+      },
+    });
+  }
+
   // months: [{monthLabel, costPerThousandUnits, manHoursPerThousandUnits,
   // outputUnit}] -- same dual-axis bar+line pattern as
   // renderGasVsProductionChart: bars for Cost/1,000 units (the headline
@@ -643,6 +791,9 @@ const Charts = (() => {
     renderGasVsProductionChart,
     renderElectricityChart,
     renderGasLpgChart,
+    renderSingleCostChart,
+    renderOverheadChart,
+    renderUnitCompareChart,
     renderLaborCostChart,
     renderRankedOeeChart,
     renderComparisonBarChart,

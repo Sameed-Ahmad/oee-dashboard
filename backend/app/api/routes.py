@@ -12,7 +12,17 @@ from ..electricity import compute_electricity_summary, compute_gas_lpg_summary
 from ..finished_goods import compute_fg_reconciliation
 from ..gas import compute_department_gas_cost_per_thousand_units, compute_gas_summary
 from ..labor_cost import compute_department_labor_cost, compute_labor_cost_summary, compute_output_reconciliation
+from ..shahi3_cost import (
+    compute_shahi3_cost_summary,
+    compute_shahi3_department_cost,
+    compute_shahi3_facility_cost,
+    compute_shahi3_manufacturing_overhead,
+    compute_shahi3_production_cost_summary,
+)
 from ..models import (
+    CompanyCompareMonthEntry,
+    CompanyCompareSummary,
+    CompanyCompareUnitEntry,
     CompanyOrgInfo,
     DayRecord,
     DepartmentAvgSummary,
@@ -40,9 +50,14 @@ from ..models import (
     ProductReconciliationSummary,
     ProductSummary,
     ReconciliationMonthEntry,
+    ManufacturingOverheadDepartmentEntry,
+    ManufacturingOverheadMonthEntry,
+    ManufacturingOverheadSummary,
     SlugName,
     SubEnterpriseOrgInfo,
     UnitDetail,
+    UnitFacilityCostMonthEntry,
+    UnitFacilityCostSummary,
     UnitOrgInfo,
     UnitOverview,
     UnitOverviewDepartmentEntry,
@@ -294,12 +309,28 @@ def get_product_gas(slug: str):
 
 @router.get("/products/{slug}/labor-cost", response_model=ProductLaborCostSummary)
 def get_product_labor_cost(slug: str):
-    """Labor cost per unit of output (packets/KG), month by month -- only
-    registered for products with an identifiable cost-center line in the
-    separate Labor Cost Analysis workbook (see labor_cost.py). 404 means
-    no labor-cost panel for this product, not an error."""
-    if slug not in PRODUCTS:
+    """Labor cost per unit of output (packets/KG), month by month. Shahi 1
+    products read labor_cost.py (separate Labor Cost Analysis workbook);
+    Shahi 3 products read shahi3_cost.py (its own monthly Dept.Wise Cost
+    Sheet, no man-hours tracked there -- see LaborCostMonthEntry). 404
+    means no labor-cost panel for this product, not an error."""
+    config = PRODUCTS.get(slug)
+    if config is None:
         raise HTTPException(status_code=404, detail=f"unknown product '{slug}'")
+
+    department = get_department(config.department_slug)
+    if department is not None and department.unit_slug == "shahi-3":
+        compute = compute_shahi3_cost_summary if department.slug.endswith("-packing") else compute_shahi3_production_cost_summary
+        result = compute(slug)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"no labor-cost data registered for '{slug}'")
+        return ProductLaborCostSummary(
+            slug=slug,
+            sourceLines=[],
+            shared=False,
+            months=[LaborCostMonthEntry(**m, manHours=None, manHoursPerThousandUnits=None) for m in result["months"]],
+        )
+
     result = compute_labor_cost_summary(slug)
     if result is None:
         raise HTTPException(status_code=404, detail=f"no labor-cost data registered for '{slug}'")
@@ -397,6 +428,144 @@ def get_company():
     return CompanyOrgInfo(displayName=COMPANY_NAME, subEnterprises=sub_enterprises)
 
 
+# Only units with real data to compare today -- the company landing page's
+# card row. Extending to Zain-1/Zain-2 later is just adding their slugs
+# here once they have OEE + cost data registered, no other change needed.
+COMPARABLE_UNIT_SLUGS = ["shahi-1", "shahi-3"]
+
+
+def _unit_avg_oee_pct(unit_slug: str) -> float | None:
+    """Equal-weight average avgOeePct across every product with data in
+    this unit, flattened across its departments (same equal-weight
+    philosophy as _avg_department_summary, one level up)."""
+    all_summaries: list[ProductSummary] = []
+    for dept in departments_in_unit(unit_slug):
+        all_summaries.extend(_department_summaries(dept.slug))
+    if not all_summaries:
+        return None
+    return round(sum(s.avgOeePct for s in all_summaries) / len(all_summaries), 2)
+
+
+def _unit_total_labor_cost(unit_slug: str) -> tuple[float | None, str | None, str | None]:
+    """Sums totalLaborCostRs across every department in this unit (each
+    already a genuine combined total -- see _department_cost_summary),
+    with the overall first/last month spanning every department that has
+    a figure."""
+    total = 0.0
+    first: str | None = None
+    last: str | None = None
+    found = False
+    for dept in departments_in_unit(unit_slug):
+        costs = _department_cost_summary(dept)
+        if costs.totalLaborCostRs is None:
+            continue
+        found = True
+        total += costs.totalLaborCostRs
+        if costs.laborCostFirstMonth and (first is None or costs.laborCostFirstMonth < first):
+            first = costs.laborCostFirstMonth
+        if costs.laborCostLastMonth and (last is None or costs.laborCostLastMonth > last):
+            last = costs.laborCostLastMonth
+    return (round(total, 2), first, last) if found else (None, None, None)
+
+
+def _company_compare_unit_entry(unit_slug: str) -> CompanyCompareUnitEntry:
+    unit = get_unit(unit_slug)
+    labor_total, labor_first, labor_last = _unit_total_labor_cost(unit_slug)
+
+    if unit_slug == "shahi-1":
+        elec_result = compute_electricity_summary()
+        elec_months = elec_result["months"] if elec_result else []
+        elec_key, cost_key = "month", "costRs"
+        gas_result = compute_gas_lpg_summary()
+        gas_months = gas_result["months"] if gas_result else []
+        gas_cost_key = "totalCostRs"
+    else:
+        facility = compute_shahi3_facility_cost()
+        all_months = facility["months"] if facility else []
+        elec_months = [m for m in all_months if m.get("electricityCostRs") is not None]
+        gas_months = [m for m in all_months if m.get("gasCostRs") is not None]
+        elec_key, cost_key = "month", "electricityCostRs"
+        gas_cost_key = "gasCostRs"
+
+    elec_total = round(sum(m[cost_key] for m in elec_months), 2) if elec_months else None
+    elec_first = min((m[elec_key] for m in elec_months), default=None)
+    elec_last = max((m[elec_key] for m in elec_months), default=None)
+
+    gas_total = round(sum(m[gas_cost_key] for m in gas_months), 2) if gas_months else None
+    gas_first = min((m["month"] for m in gas_months), default=None)
+    gas_last = max((m["month"] for m in gas_months), default=None)
+
+    return CompanyCompareUnitEntry(
+        slug=unit.slug,
+        displayName=unit.display_name,
+        avgOeePct=_unit_avg_oee_pct(unit_slug),
+        totalLaborCostRs=labor_total,
+        laborCostFirstMonth=labor_first,
+        laborCostLastMonth=labor_last,
+        totalElectricityCostRs=elec_total,
+        electricityFirstMonth=elec_first,
+        electricityLastMonth=elec_last,
+        totalGasCostRs=gas_total,
+        gasFirstMonth=gas_first,
+        gasLastMonth=gas_last,
+    )
+
+
+def _merge_month_series(shahi1_months: list[dict], shahi3_months: list[dict], cost_key: str) -> list[CompanyCompareMonthEntry]:
+    """Outer-joins two {"month", "monthLabel", cost_key} lists on month,
+    for a side-by-side comparison chart -- a month only one unit has data
+    for still appears, with the other side None rather than 0 (0 would
+    misread as "that unit spent nothing," not "no data yet")."""
+    labels: dict[str, str] = {}
+    shahi1_by_month = {m["month"]: m[cost_key] for m in shahi1_months}
+    shahi3_by_month = {m["month"]: m[cost_key] for m in shahi3_months}
+    for m in shahi1_months + shahi3_months:
+        labels.setdefault(m["month"], m["monthLabel"])
+    return [
+        CompanyCompareMonthEntry(
+            month=month,
+            monthLabel=labels[month],
+            shahi1Rs=shahi1_by_month.get(month),
+            shahi3Rs=shahi3_by_month.get(month),
+        )
+        for month in sorted(labels)
+    ]
+
+
+@router.get("/company/compare", response_model=CompanyCompareSummary)
+def get_company_compare():
+    """Shahi 1 vs. Shahi 3 comparison data for the company landing page:
+    one card per unit (overall OEE + total labor/electricity/gas cost),
+    plus month-by-month electricity and gas cost series for the two
+    comparison charts below the cards. See COMPARABLE_UNIT_SLUGS for
+    which units are included."""
+    units = [_company_compare_unit_entry(slug) for slug in COMPARABLE_UNIT_SLUGS]
+
+    shahi1_elec = compute_electricity_summary()
+    shahi1_elec_months = shahi1_elec["months"] if shahi1_elec else []
+    shahi3_facility = compute_shahi3_facility_cost()
+    shahi3_all_months = shahi3_facility["months"] if shahi3_facility else []
+    shahi3_elec_months = [m for m in shahi3_all_months if m.get("electricityCostRs") is not None]
+
+    shahi1_gas = compute_gas_lpg_summary()
+    shahi1_gas_months = shahi1_gas["months"] if shahi1_gas else []
+    shahi3_gas_months = [m for m in shahi3_all_months if m.get("gasCostRs") is not None]
+
+    return CompanyCompareSummary(
+        units=units,
+        electricityMonths=_merge_month_series(
+            [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["costRs"]} for m in shahi1_elec_months],
+            [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["electricityCostRs"]} for m in shahi3_elec_months],
+            "costRs",
+        ),
+        gasMonths=_merge_month_series(
+            [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["totalCostRs"]} for m in shahi1_gas_months],
+            [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["gasCostRs"]} for m in shahi3_gas_months],
+            "costRs",
+        ),
+    )
+
+
 @router.get("/departments/{dept_slug}", response_model=DepartmentDetail)
 def get_department_detail(dept_slug: str):
     dept = get_department(dept_slug)
@@ -465,12 +634,33 @@ def _department_cost_summary(dept) -> DepartmentCostSummary:
     """Total Labor Cost, average Gas Cost per 1,000 units (one group per
     output unit, see compute_department_gas_cost_per_thousand_units), and
     Electricity Cost per unit of this department's own output, for the
-    Shahi 1 unit cards. The workbook's own department row label is just
-    the display name without " Dept" ("Packing Dept" -> "Packing"),
-    matching its own spelling exactly.
+    unit cards. The workbook's own department row label is just the
+    display name without " Dept" ("Packing Dept" -> "Packing"), matching
+    its own spelling exactly.
+
+    Shahi 3 (dept.unit_slug == "shahi-3") is a separate, simpler source
+    (shahi3_cost.py, one workbook per month with labor+electricity
+    already combined) -- no Permanent/Contractual split to report (unlike
+    Shahi 1, Shahi 3's own Labor Cost/Pack already bundles both at the
+    source) and no per-product gas-meter data registered yet.
     """
     workbook_label = dept.display_name.replace(" Dept", "")
     product_slugs = [p.slug for p in products_in_department(dept.slug)]
+
+    if dept.unit_slug == "shahi-3":
+        labor = compute_shahi3_department_cost(workbook_label)
+        return DepartmentCostSummary(
+            totalLaborCostRs=labor["totalRs"] if labor else None,
+            laborOnlyCostRs=labor["totalRs"] if labor else None,
+            contractualLaborCostRs=0.0 if labor else None,
+            laborCostFirstMonth=labor["firstMonth"] if labor else None,
+            laborCostLastMonth=labor["lastMonth"] if labor else None,
+            laborCostPerThousandUnits=labor["costPerThousandUnits"] if labor else None,
+            laborCostOutputUnit=labor["outputUnit"] if labor else None,
+            gasCostGroups=[],
+            electricityCostPerUnitRs=labor["electricityCostPerUnitRs"] if labor else None,
+        )
+
     labor = compute_department_labor_cost(workbook_label, product_slugs)
 
     records_by_slug = {slug: _get_records(slug) for slug in product_slugs}
@@ -582,6 +772,11 @@ def get_unit_electricity(unit_slug: str):
     unit = get_unit(unit_slug)
     if unit is None:
         raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    if unit_slug != "shahi-1":
+        # electricity.py only has Shahi-1's own source-by-source workbook --
+        # Shahi 3's facility-wide electricity figure comes from a different
+        # source (shahi3_cost.py) with no per-source breakdown to show here.
+        raise HTTPException(status_code=404, detail="no electricity data registered")
     result = compute_electricity_summary()
     if result is None:
         raise HTTPException(status_code=404, detail="no electricity data registered")
@@ -616,7 +811,82 @@ def get_unit_gas_lpg(unit_slug: str):
     available, not an error."""
     if get_unit(unit_slug) is None:
         raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    if unit_slug != "shahi-1":
+        raise HTTPException(status_code=404, detail="no gas/LPG data registered")
     result = compute_gas_lpg_summary()
     if result is None:
         raise HTTPException(status_code=404, detail="no gas/LPG data registered")
     return GasLpgSummary(months=[GasLpgMonthEntry(**m) for m in result["months"]])
+
+
+@router.get("/units/{unit_slug}/facility-cost", response_model=UnitFacilityCostSummary)
+def get_unit_facility_cost(unit_slug: str):
+    """Facility-wide electricity/gas cost, month by month, for units whose
+    only source is a single lump Rs. figure per category with no
+    per-source breakdown (unlike Shahi 1's own /electricity and /gas-lpg,
+    which have one) -- today just Shahi 3 (see
+    shahi3_cost.compute_shahi3_facility_cost, reading the "Expense Detail
+    LHR" sheet's own general-ledger lines). 404 for Shahi 1 (which has
+    its own richer endpoints instead, not meant to be duplicated here) or
+    any unit with nothing registered."""
+    if get_unit(unit_slug) is None:
+        raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    if unit_slug != "shahi-3":
+        raise HTTPException(status_code=404, detail="no facility-cost data registered")
+    facility = compute_shahi3_facility_cost()
+    if facility is None:
+        raise HTTPException(status_code=404, detail="no facility-cost data registered")
+
+    packing_output: dict[str, float] = {}
+    production_output: dict[str, float] = {}
+    for dept in departments_in_unit(unit_slug):
+        if dept.display_name == "Packing Dept":
+            packing_output = _department_monthly_output(dept.slug)
+        elif dept.display_name == "Production Dept":
+            production_output = _department_monthly_output(dept.slug)
+
+    return UnitFacilityCostSummary(months=[
+        UnitFacilityCostMonthEntry(
+            month=m["month"],
+            monthLabel=m["monthLabel"],
+            electricityCostRs=m.get("electricityCostRs"),
+            gasCostRs=m.get("gasCostRs"),
+            packingOutputUnits=packing_output.get(m["month"]),
+            productionOutputUnits=production_output.get(m["month"]),
+        )
+        for m in facility["months"]
+    ])
+
+
+@router.get("/units/{unit_slug}/manufacturing-overhead", response_model=ManufacturingOverheadSummary)
+def get_unit_manufacturing_overhead(unit_slug: str):
+    """Packing's and Production's own direct cost, each with the
+    whole-of-Shahi-3 Support Department total (Factory Admin & HR,
+    Maintenance, FG Store, Quality Assurance, RM Store, Tech. Store,
+    shared Compressor/equipment electricity) added on top, divided by
+    each department's own output -- "what a unit really costs once
+    overhead is loaded onto it." See
+    shahi3_cost.compute_shahi3_manufacturing_overhead for why the two
+    departments' own totalOverheadCostRs figures must never be summed
+    together (each independently carries the FULL support cost, not a
+    split share of it). Today only Shahi 3 has this Support Department
+    breakdown -- 404 for Shahi 1 or any unit without it."""
+    if get_unit(unit_slug) is None:
+        raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
+    if unit_slug != "shahi-3":
+        raise HTTPException(status_code=404, detail="no manufacturing overhead data registered")
+
+    departments = []
+    for dept in departments_in_unit(unit_slug):
+        workbook_label = dept.display_name.replace(" Dept", "")
+        result = compute_shahi3_manufacturing_overhead(workbook_label)
+        if result is None:
+            continue
+        departments.append(ManufacturingOverheadDepartmentEntry(
+            departmentSlug=dept.slug,
+            displayName=dept.display_name,
+            months=[ManufacturingOverheadMonthEntry(**m) for m in result["months"]],
+        ))
+    if not departments:
+        raise HTTPException(status_code=404, detail="no manufacturing overhead data registered")
+    return ManufacturingOverheadSummary(departments=departments)

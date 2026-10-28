@@ -148,12 +148,12 @@ class ContractorBreakdownEntry(BaseModel):
 class LaborCostMonthEntry(BaseModel):
     month: str  # "2026-01"
     monthLabel: str  # "January 2026"
-    manHours: float
+    manHours: float | None  # None for Shahi 3 (shahi3_cost.py's source sheet doesn't track man-hours)
     laborCost: float
     output: float
     outputUnit: str  # "Packets" | "KG"
     costPerThousandUnits: float  # Rs. per 1,000 units of output (more readable than the raw per-unit fraction)
-    manHoursPerThousandUnits: float
+    manHoursPerThousandUnits: float | None
     # Standalone figure from the per-item contractor bills (contractor_labor.py) --
     # NOT part of laborCost/costPerThousandUnits above. None if no contractor bill
     # data covers this product+month (e.g. Ishida, which has no contractor file).
@@ -258,6 +258,40 @@ class GasLpgSummary(BaseModel):
     months: list[GasLpgMonthEntry]
 
 
+class UnitFacilityCostMonthEntry(BaseModel):
+    month: str  # "2026-08"
+    monthLabel: str  # "August 2026"
+    electricityCostRs: float | None
+    gasCostRs: float | None
+    packingOutputUnits: float | None  # Packing Dept's own OEE-tracked output that month (Packets); None if no records that month
+    productionOutputUnits: float | None  # Production Dept's own OEE-tracked output that month (KG); None if no records that month
+
+
+class UnitFacilityCostSummary(BaseModel):
+    months: list[UnitFacilityCostMonthEntry]
+
+
+class ManufacturingOverheadMonthEntry(BaseModel):
+    month: str  # "2026-08"
+    monthLabel: str  # "August 2026"
+    output: float
+    outputUnit: str  # "Packets" | "KG"
+    departmentCostRs: float  # this department's own direct cost (labor + electricity), every line not just registered products
+    supportCostRs: float  # whole-of-Shahi-3 Support Department total -- NOT split between Packing/Production, see shahi3_cost.py
+    totalOverheadCostRs: float  # departmentCostRs + supportCostRs
+    costPerThousandUnits: float
+
+
+class ManufacturingOverheadDepartmentEntry(BaseModel):
+    departmentSlug: str
+    displayName: str
+    months: list[ManufacturingOverheadMonthEntry]
+
+
+class ManufacturingOverheadSummary(BaseModel):
+    departments: list[ManufacturingOverheadDepartmentEntry]
+
+
 class ProductInfo(BaseModel):
     slug: str
     displayName: str
@@ -355,6 +389,34 @@ class UnitDetail(BaseModel):
     slug: str
     displayName: str
     subEnterprise: SlugName
+
+
+class CompanyCompareUnitEntry(BaseModel):
+    slug: str
+    displayName: str
+    avgOeePct: float | None  # equal-weight average across every product with data in this unit, across every department
+    totalLaborCostRs: float | None
+    laborCostFirstMonth: str | None
+    laborCostLastMonth: str | None
+    totalElectricityCostRs: float | None
+    electricityFirstMonth: str | None
+    electricityLastMonth: str | None
+    totalGasCostRs: float | None  # Shahi 1: gas + LPG combined; Shahi 3: "Factory Appliance Gas Charges"
+    gasFirstMonth: str | None
+    gasLastMonth: str | None
+
+
+class CompanyCompareMonthEntry(BaseModel):
+    month: str  # "2026-08"
+    monthLabel: str  # "August 2026"
+    shahi1Rs: float | None
+    shahi3Rs: float | None
+
+
+class CompanyCompareSummary(BaseModel):
+    units: list[CompanyCompareUnitEntry]
+    electricityMonths: list[CompanyCompareMonthEntry]
+    gasMonths: list[CompanyCompareMonthEntry]
 
 
 class UnitOverview(BaseModel):

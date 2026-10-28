@@ -6,8 +6,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BACKEND_DIR.parent
 
 DATA_DIR = BACKEND_DIR / "data"
-RAW_DATA_DIR = DATA_DIR / "raw"
-PROCESSED_DATA_DIR = DATA_DIR / "processed"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"  # shared cache dir for every unit's products, not unit-specific source data
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 

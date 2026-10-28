@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-GAS_READINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "utility" / "gas_readings.json"
+GAS_READINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "utility" / "gas_readings.json"
 
 MMBTU_PRICE_RS = 5000
 

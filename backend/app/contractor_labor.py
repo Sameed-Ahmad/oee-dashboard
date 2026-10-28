@@ -69,7 +69,7 @@ import openpyxl
 # double-counted.
 _PERIOD_SHEET_RE = re.compile(r"^\s*\d")
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "labour cost"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "labour cost"
 
 DEPARTMENT_TO_SLUG = {
     "packing fry o": "fryo",

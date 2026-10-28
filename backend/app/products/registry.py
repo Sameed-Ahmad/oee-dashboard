@@ -5,9 +5,9 @@ from anything data-driven (see registry.resolve_excel_path / product_has_data
 in api/routes.py).
 
 To onboard a new product that already has a workbook:
-  1. Drop its workbook into backend/data/raw/<slug>/ (any filename; the newest
-     .xlsx by modified time in that folder is used automatically -- see
-     resolve_excel_path).
+  1. Drop its workbook into backend/data/<Unit>/raw/<slug>/ (any filename; the
+     newest .xlsx by modified time in that folder is used automatically --
+     see resolve_excel_path).
   2. Add a ProductConfig entry below with that excel_dir.
   3. Run `python backend/scripts/build_cache.py --product <slug>` (or --all).
 No changes to the parser, API, or cache layers are required -- see parser.py,
@@ -74,28 +74,28 @@ DEPARTMENTS: dict[str, DepartmentConfig] = {
 }
 
 PRODUCTS: dict[str, ProductConfig] = {
-    # --- shahi-1-packing: the only department with real data today ---
-    "fryo": ProductConfig("fryo", "Fry-O", "shahi-1-packing", Path("backend/data/raw/fryo")),
-    "pops": ProductConfig("pops", "Pops", "shahi-1-packing", Path("backend/data/raw/pops")),
-    "ishida": ProductConfig("ishida", "Ishida", "shahi-1-packing", Path("backend/data/raw/ishida")),
-    "nimco": ProductConfig("nimco", "Nimco", "shahi-1-packing", Path("backend/data/raw/nimco")),
+    # --- shahi-1-packing: real data ---
+    "fryo": ProductConfig("fryo", "Fry-O", "shahi-1-packing", Path("backend/data/Shahi 1/raw/fryo")),
+    "pops": ProductConfig("pops", "Pops", "shahi-1-packing", Path("backend/data/Shahi 1/raw/pops")),
+    "ishida": ProductConfig("ishida", "Ishida", "shahi-1-packing", Path("backend/data/Shahi 1/raw/ishida")),
+    "nimco": ProductConfig("nimco", "Nimco", "shahi-1-packing", Path("backend/data/Shahi 1/raw/nimco")),
 
     # --- shahi-1-production: real data ---
-    "coated-peanut": ProductConfig("coated-peanut", "Coated Peanut", "shahi-1-production", Path("backend/data/raw/coated-peanut")),
-    "namak-para": ProductConfig("namak-para", "Namak Para", "shahi-1-production", Path("backend/data/raw/namak-para")),
-    "hnc-1": ProductConfig("hnc-1", "HNC 1", "shahi-1-production", Path("backend/data/raw/hnc-1")),
-    "hnc-3": ProductConfig("hnc-3", "HNC 3", "shahi-1-production", Path("backend/data/raw/hnc-3")),
-    "extruder": ProductConfig("extruder", "Extruder", "shahi-1-production", Path("backend/data/raw/extruder")),
-    "kuiper": ProductConfig("kuiper", "Kuiper", "shahi-1-production", Path("backend/data/raw/kuiper")),
+    "coated-peanut": ProductConfig("coated-peanut", "Coated Peanut", "shahi-1-production", Path("backend/data/Shahi 1/raw/coated-peanut")),
+    "namak-para": ProductConfig("namak-para", "Namak Para", "shahi-1-production", Path("backend/data/Shahi 1/raw/namak-para")),
+    "hnc-1": ProductConfig("hnc-1", "HNC 1", "shahi-1-production", Path("backend/data/Shahi 1/raw/hnc-1")),
+    "hnc-3": ProductConfig("hnc-3", "HNC 3", "shahi-1-production", Path("backend/data/Shahi 1/raw/hnc-3")),
+    "extruder": ProductConfig("extruder", "Extruder", "shahi-1-production", Path("backend/data/Shahi 1/raw/extruder")),
+    "kuiper": ProductConfig("kuiper", "Kuiper", "shahi-1-production", Path("backend/data/Shahi 1/raw/kuiper")),
 
-    # --- shahi-3-packing: known products, no data source yet ---
-    "lhr-snacks": ProductConfig("lhr-snacks", "LHR Snacks", "shahi-3-packing"),
-    "lhr-siminato": ProductConfig("lhr-siminato", "LHR Siminato", "shahi-3-packing"),
-    "lhr-nimco-1": ProductConfig("lhr-nimco-1", "LHR Nimco-1", "shahi-3-packing"),
+    # --- shahi-3-packing: real data for 3 of 4 (Nimco-2 not uploaded yet) ---
+    "lhr-snacks": ProductConfig("lhr-snacks", "LHR Snacks", "shahi-3-packing", Path("backend/data/Shahi 3/raw/lhr-snacks")),
+    "lhr-siminato": ProductConfig("lhr-siminato", "LHR Siminato", "shahi-3-packing", Path("backend/data/Shahi 3/raw/lhr-siminato")),
+    "lhr-nimco-1": ProductConfig("lhr-nimco-1", "LHR Nimco-1", "shahi-3-packing", Path("backend/data/Shahi 3/raw/lhr-nimco-1")),
     "lhr-nimco-2": ProductConfig("lhr-nimco-2", "LHR Nimco-2", "shahi-3-packing"),
 
-    # --- shahi-3-production: known products, no data source yet ---
-    "shahi3-hnc-2-lhr": ProductConfig("shahi3-hnc-2-lhr", "HNC-2 LHR", "shahi-3-production"),
+    # --- shahi-3-production: real data for 1 of 6 (rest not uploaded yet) ---
+    "shahi3-hnc-2-lhr": ProductConfig("shahi3-hnc-2-lhr", "HNC-2 LHR", "shahi-3-production", Path("backend/data/Shahi 3/raw/shahi3-hnc-2-lhr")),
     "shahi3-extruder": ProductConfig("shahi3-extruder", "Extruder", "shahi-3-production"),
     "shahi3-hnc-1": ProductConfig("shahi3-hnc-1", "HNC 1", "shahi-3-production"),
     "shahi3-hnc-3": ProductConfig("shahi3-hnc-3", "HNC 3", "shahi-3-production"),

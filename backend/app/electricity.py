@@ -61,7 +61,7 @@ from pathlib import Path
 
 import openpyxl
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "utility"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "utility"
 
 MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",

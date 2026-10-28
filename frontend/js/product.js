@@ -837,6 +837,7 @@ const Product = (() => {
     Charts.renderLaborCostChart("laborCostChart", months);
 
     const hasContractual = months.some((m) => m.contractualLaborCostRs != null);
+    const hasManHours = months.some((m) => m.manHours != null);
 
     const table = el("laborCostTable");
     table.innerHTML = `
@@ -844,8 +845,10 @@ const Product = (() => {
         <tr>
           <th>Month</th>
           <th class="numeric">Output (${unit})</th>
+          ${hasManHours ? `
           <th class="numeric">Man-Hours</th>
           <th class="numeric">Man-Hours / 1,000 ${unit}</th>
+          ` : ""}
           <th class="numeric">Labor Cost (Rs.)</th>
           <th class="numeric">Cost / 1,000 ${unit}</th>
           ${hasContractual ? `
@@ -859,8 +862,10 @@ const Product = (() => {
           <tr class="${m.contractualLaborCostRs != null ? "clickable-row" : ""}" data-month="${m.month}">
             <td>${m.monthLabel}</td>
             <td class="numeric">${m.output.toLocaleString()}</td>
-            <td class="numeric">${m.manHours.toLocaleString()}</td>
-            <td class="numeric">${m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>
+            ${hasManHours ? `
+            <td class="numeric">${m.manHours != null ? m.manHours.toLocaleString() : "—"}</td>
+            <td class="numeric">${m.manHoursPerThousandUnits != null ? m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 }) : "—"}</td>
+            ` : ""}
             <td class="numeric">${m.laborCost.toLocaleString()}</td>
             <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
             ${hasContractual ? `

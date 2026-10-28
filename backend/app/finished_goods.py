@@ -78,7 +78,7 @@ import openpyxl
 
 from .labor_cost import MONTH_NAMES
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "ERP"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "ERP"
 
 # A day's Produced vs. Received gap (in either direction) beyond this
 # percentage is flagged -- small gaps are ordinary day-to-day timing noise

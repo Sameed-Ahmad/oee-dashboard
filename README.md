@@ -5,10 +5,18 @@ across Shahi Enterprises' packing and production lines, parsed from the
 plant's daily Excel OEE reports. Runs entirely offline from a single
 `uvicorn` process.
 
-Today it's populated with real data for Shahi 1's two departments:
+Today it's populated with real data for two units:
 
-- **Packing Dept**: Fry-O, Pops, Ishida, Nimco
-- **Production Dept**: Coated Peanut, Namak Para, HNC 1, HNC 3, Extruder, Kuiper
+- **Shahi 1** -- Packing Dept (Fry-O, Pops, Ishida, Nimco) and Production
+  Dept (Coated Peanut, Namak Para, HNC 1, HNC 3, Extruder, Kuiper).
+- **Shahi 3** -- Packing Dept (LHR Nimco-1, LHR Siminato, LHR Snacks; LHR
+  Nimco-2 registered but no OEE file uploaded yet) and Production Dept
+  (HNC-2 LHR; Extruder has cost data but no OEE file yet, see
+  [Shahi 3's cost data](#shahi-3s-cost-data) below).
+
+The landing page (`#/company`) compares the two units -- overall OEE, total
+labor/electricity/gas cost, and two cost-comparison charts -- before
+drilling into either one's own dashboard.
 
 The backend models the whole company org chart (sub-enterprises → units →
 departments → products), so onboarding the next product, department, or unit
@@ -61,10 +69,11 @@ uvicorn backend.app.main:app --reload
 Open http://localhost:8000 — FastAPI serves both the API (`/api/*`) and the
 static frontend from this single process/port, with caching disabled on the
 frontend files (this app is actively edited locally; see `NoCacheStaticFiles`
-in `main.py`). The landing page is the Shahi 1 unit overview (Packing Dept vs
-Production Dept); click a department card to see its product comparison,
-then a product card (or the tab bar once inside a product's dashboard) to
-drill into its full OEE view.
+in `main.py`). The landing page is the company overview (`#/company`,
+comparing Shahi 1 vs. Shahi 3); click a unit's card to reach that unit's own
+overview (Packing Dept vs. Production Dept), a department card to see its
+product comparison, then a product card (or the tab bar once inside a
+product's dashboard) to drill into its full OEE view.
 
 **The whole app shows the current year's data only** (older years are
 considered stale, per explicit request) — every calendar, chart, KPI, and
@@ -163,21 +172,38 @@ backend/
     cache.py                   JSON cache load/save + summary computation
     products/registry.py        the full org chart: SubEnterpriseConfig / UnitConfig /
                                  DepartmentConfig / ProductConfig
-    api/routes.py                 all /api/* endpoints
+    shahi3_cost.py                 Shahi 3's own labor/electricity/gas cost reader
+                                    (see "Shahi 3's cost data" below) -- entirely
+                                    separate from labor_cost.py/electricity.py,
+                                    which are Shahi-1-specific
+    api/routes.py                 all /api/* endpoints, including /company/compare
   scripts/build_cache.py    CLI to (re)build one or every product's processed/<slug>.json
-  data/raw/<slug>/           source Excel workbooks (per product; newest file by
-                              modified time is used automatically, see below)
-  data/processed/             generated JSON caches (gitignored)
+  data/
+    Shahi 1/raw/<slug>/       Shahi 1's source OEE workbooks (per product; newest
+                              file by modified time is used automatically)
+    Shahi 1/ERP/                finished-goods receipts (see finished_goods.py)
+    Shahi 1/labour cost/          Labor Cost Analysis + contractor bills
+    Shahi 1/utility/                Energy Consumption Report + gas_readings.json
+    Shahi 3/raw/<slug>/       Shahi 3's source OEE workbooks, same convention
+    Shahi 3/Labour and Energy/  one "Dept.Wise Cost Sheet Labor & Energy S3
+                                 (<Mon>-26).xlsx" per month (see shahi3_cost.py)
+    processed/                 generated JSON caches for EVERY unit's products
+                                (gitignored) -- shared, not nested under a unit,
+                                since it's regenerable cache, not source data
   tests/test_parser.py        unit + integration tests against the real workbooks
 frontend/
-  index.html                a single page with three views (unit overview /
-                             department overview / single-product dashboard),
-                             switched client-side via URL hash routing
-                             (#/unit/<slug>, #/department/<slug>, #/product/<slug>)
+  index.html                a single page with four views (company overview /
+                             unit overview / department overview / single-product
+                             dashboard), switched client-side via URL hash routing
+                             (#/company, #/unit/<slug>, #/department/<slug>,
+                             #/product/<slug>)
   js/
     app.js                    top-level router + shared header + dark-mode toggle
+    company.js                  company landing page (Shahi 1 vs. Shahi 3 cards +
+                                 electricity/gas comparison charts) -- the default
+                                 landing page
     unit.js                     unit-overview page (department comparison cards +
-                                 ranked OEE chart) -- the default landing page
+                                 ranked OEE chart)
     department.js              department-overview page (product comparison cards,
                                 ranked OEE chart, downtime small multiples)
     product.js                  single-product dashboard (calendar with a year
@@ -196,10 +222,14 @@ their own downtime category names. Everything is located by content, per
 sheet, at parse time:
 
 - **File selection:** `ProductConfig.excel_dir` points at a folder
-  (`backend/data/raw/<slug>/`), and the parser always uses the single newest
-  `.xlsx` file in it by modified time (Excel's own `~$...` lock files are
-  ignored). Dropping in a fresh export is just "put the file in the folder"
-  -- no filename or config change needed.
+  (e.g. `backend/data/Shahi 1/raw/<slug>/` or `backend/data/Shahi 3/raw/<slug>/`),
+  and the parser always uses the single newest `.xlsx` file in it by modified
+  time (Excel's own `~$...` lock files are ignored). Dropping in a fresh
+  export is just "put the file in the folder" -- no filename or config
+  change needed. The same parser handles both units' workbooks unmodified --
+  confirmed against Shahi 3's real data (Sep-2025 through Oct-2026, more
+  history than Shahi 1 has), including its 2-digit years (`parse_sheet_name`
+  already handled "25"/"26") and Day/Night-suffixed sheets (Siminato).
 - **The 16-row summary block** (Machines/Time/.../Output-Labor) is found by
   searching every cell for the `'Available'` / `'Machines'` / `<number>`
   triplet, rather than assuming it's at any particular column -- this varies
@@ -304,14 +334,14 @@ OEE workbooks `parser.py` handles, feed a set of cost/reconciliation panels
 layered on top of the OEE data:
 
 - **Labor cost** (`backend/app/labor_cost.py`, reading
-  `backend/data/labour cost/*Labor Cost Analysis*.xlsx`'s "Shahi-1 Report"
+  `backend/data/Shahi 1/labour cost/*Labor Cost Analysis*.xlsx`'s "Shahi-1 Report"
   sheet) -- monthly Output/Man-Hours/Labor Cost per cost-center line,
   summed where a workbook line covers more than one dashboard product
   (e.g. Nimco's "R-10" + "R-20 / R-30"). Surfaced on every product's
   Overview page as a **Labor Cost table** (Output, Man-Hours, Man-Hours/
   1,000 units, Labor Cost, Cost/1,000 units).
 - **Contractual labour cost** (`backend/app/contractor_labor.py`, reading
-  `backend/data/labour cost/*Packing Contractor Bill*.xlsx` -- one
+  `backend/data/Shahi 1/labour cost/*Packing Contractor Bill*.xlsx` -- one
   workbook per contractor, one sheet per 15-day billing period) -- a
   second, separately-sourced cost figure for the 3 Packing Dept products
   with a contractor file (Fry-O, Pops, Nimco -- Nimco sums two
@@ -338,7 +368,7 @@ layered on top of the OEE data:
   run through Oct-2026 -- no hardcoded cutoff, it just starts showing
   more the moment that workbook is extended.
 - **Electricity** (`backend/app/electricity.py`, reading
-  `backend/data/utility/Energy Consumption Report -2026.xlsx`'s
+  `backend/data/Shahi 1/utility/Energy Consumption Report -2026.xlsx`'s
   "Electricity Consumption-26" sheet) -- Shahi-1's own monthly share
   (units + cost, bars + line) of the facility-wide total across its 4
   power sources (K-Electric, Gas Generator, Diesel Generator, Solar),
@@ -356,7 +386,7 @@ layered on top of the OEE data:
   double-count) and Wood Pellets (a Shahi+Zain combined figure with no way
   to split out Shahi-1's own share).
 - **Produced vs. Received** (`backend/app/finished_goods.py`, reading
-  `backend/data/ERP/PACKING SHAHI 1 <Mon>26 TRANSFAR ORDER SHIPMENT.xlsx`,
+  `backend/data/Shahi 1/ERP/PACKING SHAHI 1 <Mon>26 TRANSFAR ORDER SHIPMENT.xlsx`,
   one file per month) -- compares this dashboard's own OEE-tracked output
   (`stockTransferred`) against the finished-goods warehouse's actual
   received quantity, day by day, for the 4 Packing Dept products (Fry-O,
@@ -370,13 +400,77 @@ layered on top of the OEE data:
   red if that month's gap looks unusual); clicking a month opens its
   day-by-day breakdown.
 
+## Shahi 3's cost data
+
+Shahi 3 reads from an entirely different, simpler source than Shahi 1:
+`backend/app/shahi3_cost.py`, parsing `backend/data/Shahi 3/Labour and
+Energy/Dept.Wise Cost Sheet Labor & Energy S3(<Mon>-26).xlsx` -- one
+workbook per month (currently Aug-26, Sep-26), each already combining
+labor + electricity (+ gas, Production only) in one file instead of
+Shahi 1's three separate workbooks. Reads each file's "Packing" sheet
+(absolute Total Packs/Payroll/Electricity Cost per "Total <X> Department"
+subtotal row) and "Plants" sheet (same idea, Production side, one row
+per department already at summary grain), plus the "Expense Detail LHR"
+sheet's own "FACTORY ELECTRICITY"/"FACTORY APPLIANCE GAS CHARGES" general-
+ledger lines for the facility-wide total used on the company comparison
+page. Column headers are found by their own text (not hardcoded letters),
+same philosophy as `parser.py`.
+
+The cost sheet's own department labels don't literally match the
+dashboard's product slugs -- this mapping was confirmed with the person
+running the dashboard, not guessed (see the module's own docstring for
+the full reasoning and the real data-quality issue each decision
+resolves):
+
+| Cost-sheet department | Product slug | Note |
+|---|---|---|
+| "BB R10" | `lhr-nimco-1` | the R-10 packing line |
+| "BB R20/B30/SN50" | `lhr-nimco-2` | the R-20 line; no OEE file uploaded yet |
+| "Ishida" (Packing sheet) / "Saminato" (Summary sheet) | `lhr-siminato` | same line, confirmed via an identical Rs. figure in both of the workbook's own tabs |
+| "FryO" + "Pops" (summed) | `lhr-snacks` | NOT two products -- these two Packing-sheet rows together ARE Shahi 3's "Snacks" line (WheatO/Popstar/Tacoz/Thunder Pops under "Pops", Fry O itself under "FryO"), same pattern as Shahi 1's Nimco summing its own R-10 + R-20 |
+| "Production - H&C - 2" (Plants sheet) | `shahi3-hnc-2-lhr` | |
+| "Production - Pops" (Plants sheet) | `shahi3-extruder` | by analogy with Shahi 1's own Extruder line being filed as "Production - Pops" there -- an inference, not independently confirmed |
+
+"Production - Batch Frying" / "Mixing" / "Flavor Grinding" / "Sorting"
+have no confirmed product mapping yet and are left out entirely rather
+than guessed onto one of the existing Production stub slugs (hnc-1/
+hnc-3/kuiper/nomak-para) -- their cost is real but currently unsurfaced.
+
+Gas Cost/Kg is only ever filled in on the Plants sheet's own facility
+"Total" row (every individual department shows 0), so it's exposed only
+at the whole-Shahi-3-Production grain via `compute_shahi3_facility_cost`,
+not per product. Man-hours aren't tracked in this source at all, so
+Shahi 3 products' Labor Cost table omits that column entirely (see
+`LaborCostMonthEntry.manHours`, nullable for exactly this reason) rather
+than showing a fake zero. Shahi 1's own Electricity/Gas & LPG unit-page
+panels (source-by-source K-Electric/Gas Generator/etc. breakdown) aren't
+replicated for Shahi 3 -- `GET /units/shahi-3/electricity` and
+`/gas-lpg` both deliberately 404 rather than silently serving Shahi 1's
+data under a Shahi-3 request.
+
+## Company overview (Shahi 1 vs. Shahi 3)
+
+`GET /company/compare` (`company.js`, the `#/company` landing page) is
+the entry point above the unit level: one card per unit in
+`COMPARABLE_UNIT_SLUGS` (today `["shahi-1", "shahi-3"]`) showing overall
+OEE (equal-weight average across every product with data in that unit,
+flattened across departments) and total labor/electricity/gas cost, plus
+two month-by-month comparison charts below. A unit's electricity/gas
+total comes from its own facility-wide source (`compute_electricity_summary`
++ `compute_gas_lpg_summary` for Shahi 1, `compute_shahi3_facility_cost`
+for Shahi 3); a month only one unit has data for still appears in the
+chart with the other side blank, never a misleading 0. Extending this to
+Zain 1/2 later is just adding their slugs to `COMPARABLE_UNIT_SLUGS` once
+they have real OEE + cost data -- the org chart already knows about them.
+
 ## Adding a new product
 
 The parsing engine, API, and cache layer are all generic — onboarding a new
 product requires no changes to those layers, regardless of its column
 layout or downtime category names:
 
-1. Drop the new workbook into `backend/data/raw/<slug>/` (any filename).
+1. Drop the new workbook into `backend/data/<Unit>/raw/<slug>/` (any
+   filename, e.g. `backend/data/Shahi 3/raw/lhr-nimco-2/`).
 2. Add a `ProductConfig` entry to `PRODUCTS` in
    `backend/app/products/registry.py`, pointing `department_slug` at an
    existing (or new) department:
@@ -385,19 +479,15 @@ layout or downtime category names:
        slug="nimco",
        display_name="Nimco",
        department_slug="shahi-1-packing",
-       excel_dir=Path("backend/data/raw/nimco"),
+       excel_dir=Path("backend/data/Shahi 1/raw/nimco"),
    ),
    ```
 3. Build its cache: `python backend/scripts/build_cache.py --product nimco`
 4. `/api/products`, `/api/departments/<dept>/overview`,
    `/api/units/<unit>/overview`, and `/api/products/nimco/...` all pick it
-   up automatically.
-5. **Not done in this version:** the frontend has no full company/unit
-   switcher yet — it's hardcoded to land on `shahi-1` (see
-   `DEFAULT_UNIT_SLUG` in `frontend/js/app.js`, with a comment marking where
-   a real switcher would hook in once more units have data). `GET
-   /api/company` already returns the full org chart with per-product
-   `hasData` flags, ready for that.
+   up automatically. If it's a brand new unit (not Shahi 1/3), also add its
+   slug to `COMPARABLE_UNIT_SLUGS` in `routes.py` to include it on the
+   company landing page.
 
 Adding a whole new **department, unit, or sub-enterprise** with no products
 yet is the same idea one level up: add a `DepartmentConfig` (and
