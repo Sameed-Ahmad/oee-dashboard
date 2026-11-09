@@ -838,6 +838,15 @@ const Product = (() => {
 
     const hasContractual = months.some((m) => m.contractualLaborCostRs != null);
     const hasManHours = months.some((m) => m.manHours != null);
+    const hasTotalCost = months.some((m) => m.totalCostRs != null);
+    // Shahi 1 products have the true Permanent-only figure split out from
+    // the workbook's own Permanent+Contractual blend (see labor_cost.py) --
+    // when present, show THAT as "Permanent Labour Cost" instead of the
+    // blended laborCost as plain "Labor Cost". Shahi 3 has no such split
+    // at its own source, so it keeps the original "Labor Cost" labeling.
+    const hasPermanent = months.some((m) => m.permanentLaborCostRs != null);
+    const laborLabel = hasPermanent ? "Permanent Labour Cost (Rs.)" : "Labor Cost (Rs.)";
+    const costPerUnitLabel = hasPermanent ? `Permanent Labour Cost / 1,000 ${unit}` : `Cost / 1,000 ${unit}`;
 
     const table = el("laborCostTable");
     table.innerHTML = `
@@ -849,11 +858,15 @@ const Product = (() => {
           <th class="numeric">Man-Hours</th>
           <th class="numeric">Man-Hours / 1,000 ${unit}</th>
           ` : ""}
-          <th class="numeric">Labor Cost (Rs.)</th>
-          <th class="numeric">Cost / 1,000 ${unit}</th>
+          <th class="numeric">${laborLabel}</th>
+          <th class="numeric">${costPerUnitLabel}</th>
           ${hasContractual ? `
           <th class="numeric">Contractual Labour Cost (Rs.)</th>
           <th class="numeric">Contractual Cost / 1,000 ${unit}</th>
+          ` : ""}
+          ${hasTotalCost ? `
+          <th class="numeric">Total Cost (Rs.)</th>
+          <th class="numeric">Total Cost / 1,000 ${unit}</th>
           ` : ""}
         </tr>
       </thead>
@@ -866,11 +879,15 @@ const Product = (() => {
             <td class="numeric">${m.manHours != null ? m.manHours.toLocaleString() : "—"}</td>
             <td class="numeric">${m.manHoursPerThousandUnits != null ? m.manHoursPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 3 }) : "—"}</td>
             ` : ""}
-            <td class="numeric">${m.laborCost.toLocaleString()}</td>
-            <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+            <td class="numeric">${(hasPermanent ? m.permanentLaborCostRs : m.laborCost).toLocaleString()}</td>
+            <td class="numeric">${(hasPermanent ? m.permanentCostPerThousandUnits : m.costPerThousandUnits).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
             ${hasContractual ? `
             <td class="numeric">${m.contractualLaborCostRs != null ? m.contractualLaborCostRs.toLocaleString() : "—"}</td>
             <td class="numeric">${m.contractualCostPerThousandUnits != null ? m.contractualCostPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
+            ` : ""}
+            ${hasTotalCost ? `
+            <td class="numeric">${m.totalCostRs != null ? m.totalCostRs.toLocaleString() : "—"}</td>
+            <td class="numeric">${m.totalCostPerThousandUnits != null ? m.totalCostPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
             ` : ""}
           </tr>
         `).join("")}

@@ -1,4 +1,8 @@
-from app.labor_cost import compute_department_labor_cost, compute_labor_cost_summary
+from app.labor_cost import (
+    compute_department_labor_cost,
+    compute_labor_cost_summary,
+    compute_shahi1_manufacturing_overhead,
+)
 
 
 def test_extruder_source_line_is_filed_under_production_pops():
@@ -131,18 +135,117 @@ def test_ishida_has_no_contractual_labor_cost():
     assert jan["contractors"] == []
 
 
+def test_fryo_permanent_labor_cost_is_the_true_permanent_only_figure():
+    """permanentLaborCostRs must be the TRUE Permanent-only portion
+    (Rs. 177,612, from the raw "Shahi-1" sheet) -- distinct from laborCost
+    (Rs. 312,600), which is Permanent + the workbook's own understated
+    Contractual estimate already combined."""
+    result = compute_labor_cost_summary("fryo")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["permanentLaborCostRs"] == 177612
+    assert jan["permanentLaborCostRs"] != jan["laborCost"]
+    assert jan["permanentCostPerThousandUnits"] == round(177612 / jan["output"] * 1000, 2)
+    # Permanent + real Contractual must equal totalCostRs exactly whenever
+    # real contractual data exists (Fry-O does).
+    assert jan["permanentLaborCostRs"] + jan["contractualLaborCostRs"] == jan["totalCostRs"]
+
+
+def test_nimco_permanent_labor_cost_sums_both_lines():
+    """Nimco is two raw-sheet lines -- Permanent-only must be R-10's
+    Permanent (Rs. 502,888) + R-20/R-30's Permanent (Rs. 164,900) =
+    Rs. 667,788."""
+    result = compute_labor_cost_summary("nimco")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["permanentLaborCostRs"] == 667788
+
+
+def test_ishida_permanent_labor_cost_present_even_without_real_contractual():
+    """Ishida has no real contractor-bill data, but permanentLaborCostRs
+    is still the true Permanent-only figure from the raw sheet (Rs.
+    252,471) -- distinct from both laborCost (Rs. 1,096,582, the
+    workbook's own Permanent+Contractual blend) and totalCostRs (which
+    falls back to laborCost here, since there's no real contractual
+    figure to add to permanentLaborCostRs instead)."""
+    result = compute_labor_cost_summary("ishida")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["permanentLaborCostRs"] == 252471
+    assert jan["contractualLaborCostRs"] is None
+    assert jan["totalCostRs"] == jan["laborCost"]
+
+
+def test_fryo_total_cost_uses_permanent_plus_real_contractual_not_naive_sum():
+    """Regression guard for the exact double-counting bug found in the
+    Packing Dept card: laborCost (Rs. 312,600) already includes the
+    workbook's OWN understated contractual estimate (Rs. 134,988), so
+    totalCostRs must NOT be laborCost + contractualLaborCostRs (which
+    would double-count that Rs. 134,988) -- it must be
+    Permanent-only (Rs. 177,612, from the raw "Shahi-1" sheet) + the
+    REAL contractual figure (Rs. 1,060,974) = Rs. 1,238,586."""
+    result = compute_labor_cost_summary("fryo")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["laborCost"] == 312600
+    assert jan["contractualLaborCostRs"] == 1060974.0
+    naive_sum = jan["laborCost"] + jan["contractualLaborCostRs"]
+    assert jan["totalCostRs"] == 1238586.0
+    assert jan["totalCostRs"] != naive_sum
+    assert jan["totalCostPerThousandUnits"] == round(jan["totalCostRs"] / jan["output"] * 1000, 2)
+
+
+def test_ishida_total_cost_equals_labor_cost_unchanged():
+    """No real contractor-bill data exists for Ishida, so there's nothing
+    to correct with -- totalCostRs must equal laborCost exactly, not be
+    None or some other derived figure."""
+    result = compute_labor_cost_summary("ishida")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["totalCostRs"] == jan["laborCost"] == 1096582.0
+
+
+def test_nimco_total_cost_sums_permanent_across_both_lines_plus_one_real_contractual():
+    """Nimco is two raw-sheet lines (R-10 Permanent Rs. 502,888 + R-20/R-30
+    Permanent Rs. 164,900 = Rs. 667,788 combined) feeding one real
+    contractual figure (Rs. 1,117,872, already a combined total across
+    both of Nimco's own contractors -- see contractor_labor.py) -- must
+    not be added twice. Total: Rs. 667,788 + Rs. 1,117,872 = Rs. 1,785,660."""
+    result = compute_labor_cost_summary("nimco")
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["totalCostRs"] == 1785660.0
+
+
 def test_department_labor_cost_folds_in_contractual_cost_when_slugs_given():
     """Passing product_slugs (as the unit-page cards do) must fold the
-    per-item contractor bills into totalRs/costPerThousandUnits -- the
-    department card is meant to read as one genuine total, unlike
+    REAL per-item contractor bills into totalRs/costPerThousandUnits --
+    the department card is meant to read as one genuine total, unlike
     compute_labor_cost_summary's per-product figures which keep the two
-    separate on purpose."""
+    separate on purpose. Packing's own real contractual figure is far
+    larger than the workbook's own (understated) one -- see
+    test_department_labor_cost_packing_corrects_understated_contractual
+    -- so the combined total ends up well above the uncorrected one,
+    not merely equal to it plus a small addition."""
     packing_only = compute_department_labor_cost("Packing")
     packing_combined = compute_department_labor_cost("Packing", ["fryo", "ishida", "pops", "nimco"])
-    assert packing_combined["laborOnlyRs"] == packing_only["totalRs"]
     assert packing_combined["contractualRs"] > 0
     assert packing_combined["totalRs"] == round(packing_combined["laborOnlyRs"] + packing_combined["contractualRs"], 2)
+    assert packing_combined["totalRs"] > packing_only["totalRs"]
     assert packing_combined["costPerThousandUnits"] > packing_only["costPerThousandUnits"]
+
+
+def test_department_labor_cost_packing_corrects_understated_contractual():
+    """Regression guard for a real double-counting bug: an earlier
+    version simply added contractor_labor.py's real contractual figure
+    on top of the workbook's own Total Labor Cost row, which ALREADY
+    includes that workbook's own (much smaller) contractual estimate for
+    Fry-O/Pops/Nimco -- e.g. Jan-26 Fry-O: the workbook's own Contractual
+    column says Rs. 134,988, but the real contractor bills for that same
+    month total Rs. 1,060,974 (~8x higher). The corrected total must be
+    well above naive-but-plausible double-counted or under-corrected
+    values -- hand-verified for Jan-26 + Aug-26 directly against the raw
+    "Shahi-1" sheet: Rs. 4,950,149.20 (Jan) + Rs. 4,769,419.00 (Aug) =
+    Rs. 9,719,568.20 for those two months alone."""
+    packing_combined = compute_department_labor_cost("Packing", ["fryo", "ishida", "pops", "nimco"])
+    assert packing_combined is not None
+    # Permanent-only sum must be meaningfully smaller than the real total --
+    # confirms contractualRs isn't accidentally zero or negative.
+    assert packing_combined["laborOnlyRs"] < packing_combined["totalRs"] * 0.5
 
 
 def test_department_labor_cost_contractual_is_zero_without_matching_slugs():
@@ -167,3 +270,74 @@ def test_nimco_contractual_cost_sums_both_contractors_except_when_one_has_no_bil
     names = {c["contractor"] for c in feb["contractors"]}
     assert names == {"Mr. Asif Ghulam Nabi", "Mr.Allah Datta (Basit Enterprise)"}
     assert feb["contractualLaborCostRs"] == round(sum(c["totalAmountRs"] for c in feb["contractors"]), 2)
+
+
+def test_shahi1_manufacturing_overhead_packing_matches_hand_calculation():
+    """Hand-verified directly against the raw "Shahi-1" sheet: Jan-26's
+    corrected Packing total (Permanent across all 6 lines + real
+    contractual for Fry-O/Pops/Nimco + Ishida's and Printing's own
+    unchanged totals) is Rs. 4,950,149.20, Jan-26's Support total
+    (summing all 9 SUPPORT_DEPARTMENTS' own Total Labor Cost rows) is
+    Rs. 11,451,375.00, and Jan-26's Maintenance & Repair total (see
+    test_maintenance_cost.py) is Rs. 3,500,247.16."""
+    result = compute_shahi1_manufacturing_overhead("Packing")
+    assert result is not None
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["departmentCostRs"] == 4950149.2
+    assert jan["supportCostRs"] == 11451375.0
+    assert jan["maintenanceRepairCostRs"] == 3500247.16
+    assert jan["totalOverheadCostRs"] == round(4950149.2 + 11451375.0 + 3500247.16, 2)
+    assert jan["costPerThousandUnits"] == round(jan["totalOverheadCostRs"] / jan["output"] * 1000, 2)
+
+
+def test_shahi1_manufacturing_overhead_production_uses_uncorrected_total():
+    """Production has no independent contractor-bill data to correct
+    with, so its departmentCostRs is just the sum of its own raw-sheet
+    lines' totals (Permanent + the workbook's own contractual, unchanged)
+    -- Jan-26 hand-verified at Rs. 4,512,912 (matches the "Shahi-1
+    Report" sheet's own Production total exactly, confirming no
+    correction was mistakenly applied there)."""
+    result = compute_shahi1_manufacturing_overhead("Production")
+    assert result is not None
+    jan = next(m for m in result["months"] if m["month"] == "2026-01")
+    assert jan["departmentCostRs"] == 4512912.0
+
+
+def test_shahi1_manufacturing_overhead_support_cost_shared_not_split():
+    """Packing's and Production's own overhead-loaded figures must each
+    carry the FULL Support total for a shared month -- Support isn't
+    split between them at the source, so both legitimately show the
+    same supportCostRs for Jan-26, even though they must never be summed
+    together (that would double-count it)."""
+    packing_jan = next(m for m in compute_shahi1_manufacturing_overhead("Packing")["months"] if m["month"] == "2026-01")
+    production_jan = next(m for m in compute_shahi1_manufacturing_overhead("Production")["months"] if m["month"] == "2026-01")
+    assert packing_jan["supportCostRs"] == production_jan["supportCostRs"] == 11451375.0
+
+
+def test_shahi1_manufacturing_overhead_maintenance_cost_also_shared_not_split():
+    """Same non-split principle as Support -- Maintenance & Repair isn't
+    split between Packing and Production either, so Packing's and
+    Production's own maintenanceRepairCostRs for a shared month can
+    legitimately differ (they're not required to be IDENTICAL the way
+    supportCostRs is, since maintenance has its own PKF-only/PRF-only
+    portions mixed in with the shared "both" portion -- see
+    maintenance_cost.py) but each must be a real, positive figure on its
+    own, independently loaded in full."""
+    packing_jan = next(m for m in compute_shahi1_manufacturing_overhead("Packing")["months"] if m["month"] == "2026-01")
+    production_jan = next(m for m in compute_shahi1_manufacturing_overhead("Production")["months"] if m["month"] == "2026-01")
+    assert packing_jan["maintenanceRepairCostRs"] > 0
+    assert production_jan["maintenanceRepairCostRs"] > 0
+
+
+def test_shahi1_manufacturing_overhead_covers_all_eight_months():
+    packing = compute_shahi1_manufacturing_overhead("Packing")
+    production = compute_shahi1_manufacturing_overhead("Production")
+    assert packing is not None and production is not None
+    assert len(packing["months"]) == 8
+    assert len(production["months"]) == 8
+    assert all(m["costPerThousandUnits"] > 0 for m in packing["months"])
+    assert all(m["costPerThousandUnits"] > 0 for m in production["months"])
+
+
+def test_shahi1_manufacturing_overhead_unknown_department_returns_none():
+    assert compute_shahi1_manufacturing_overhead("Not A Real Department") is None

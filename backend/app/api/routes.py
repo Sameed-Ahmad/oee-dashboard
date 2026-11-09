@@ -2,6 +2,7 @@
 re-parsing the workbook on a normal request (see POST /refresh for that)."""
 from __future__ import annotations
 
+import calendar
 import datetime
 import logging
 
@@ -11,7 +12,12 @@ from ..cache import compute_summary, load_cache, save_cache
 from ..electricity import compute_electricity_summary, compute_gas_lpg_summary
 from ..finished_goods import compute_fg_reconciliation
 from ..gas import compute_department_gas_cost_per_thousand_units, compute_gas_summary
-from ..labor_cost import compute_department_labor_cost, compute_labor_cost_summary, compute_output_reconciliation
+from ..labor_cost import (
+    compute_department_labor_cost,
+    compute_labor_cost_summary,
+    compute_output_reconciliation,
+    compute_shahi1_manufacturing_overhead,
+)
 from ..shahi3_cost import (
     compute_shahi3_cost_summary,
     compute_shahi3_department_cost,
@@ -21,6 +27,7 @@ from ..shahi3_cost import (
 )
 from ..models import (
     CompanyCompareMonthEntry,
+    CompanyCompareOutputMonthEntry,
     CompanyCompareSummary,
     CompanyCompareUnitEntry,
     CompanyOrgInfo,
@@ -511,24 +518,46 @@ def _company_compare_unit_entry(unit_slug: str) -> CompanyCompareUnitEntry:
     )
 
 
-def _merge_month_series(shahi1_months: list[dict], shahi3_months: list[dict], cost_key: str) -> list[CompanyCompareMonthEntry]:
-    """Outer-joins two {"month", "monthLabel", cost_key} lists on month,
+def _merge_month_series(
+    shahi1_months: list[dict], shahi3_months: list[dict], value_key: str,
+    model_cls: type, shahi1_field: str, shahi3_field: str,
+):
+    """Outer-joins two {"month", "monthLabel", value_key} lists on month,
     for a side-by-side comparison chart -- a month only one unit has data
     for still appears, with the other side None rather than 0 (0 would
-    misread as "that unit spent nothing," not "no data yet")."""
+    misread as "that unit had none," not "no data yet"). model_cls is
+    CompanyCompareMonthEntry (shahi1Rs/shahi3Rs, cost charts) or
+    CompanyCompareOutputMonthEntry (shahi1Units/shahi3Units, output
+    charts) -- same join logic either way, just different field names."""
     labels: dict[str, str] = {}
-    shahi1_by_month = {m["month"]: m[cost_key] for m in shahi1_months}
-    shahi3_by_month = {m["month"]: m[cost_key] for m in shahi3_months}
+    shahi1_by_month = {m["month"]: m[value_key] for m in shahi1_months}
+    shahi3_by_month = {m["month"]: m[value_key] for m in shahi3_months}
     for m in shahi1_months + shahi3_months:
         labels.setdefault(m["month"], m["monthLabel"])
     return [
-        CompanyCompareMonthEntry(
-            month=month,
-            monthLabel=labels[month],
-            shahi1Rs=shahi1_by_month.get(month),
-            shahi3Rs=shahi3_by_month.get(month),
-        )
+        model_cls(**{
+            "month": month,
+            "monthLabel": labels[month],
+            shahi1_field: shahi1_by_month.get(month),
+            shahi3_field: shahi3_by_month.get(month),
+        })
         for month in sorted(labels)
+    ]
+
+
+def _unit_department_monthly_output(unit_slug: str, department_display_name: str) -> list[dict]:
+    """{"month", "monthLabel", "units"} list for the one department in
+    this unit matching `department_display_name` ("Packing Dept" or
+    "Production Dept") -- reuses _department_monthly_output's own
+    OEE-tracked stockTransferred sums, same figure the unit page's own
+    Electricity/Gas tables already show as Packing/Production Output."""
+    dept = next((d for d in departments_in_unit(unit_slug) if d.display_name == department_display_name), None)
+    if dept is None:
+        return []
+    output_by_month = _department_monthly_output(dept.slug)
+    return [
+        {"month": month_key, "monthLabel": f"{calendar.month_name[int(month_key[5:7])]} {month_key[:4]}", "units": units}
+        for month_key, units in output_by_month.items()
     ]
 
 
@@ -536,9 +565,10 @@ def _merge_month_series(shahi1_months: list[dict], shahi3_months: list[dict], co
 def get_company_compare():
     """Shahi 1 vs. Shahi 3 comparison data for the company landing page:
     one card per unit (overall OEE + total labor/electricity/gas cost),
-    plus month-by-month electricity and gas cost series for the two
-    comparison charts below the cards. See COMPARABLE_UNIT_SLUGS for
-    which units are included."""
+    plus month-by-month Packing output (Packets), Production output
+    (KG), electricity cost, and gas cost series for the comparison
+    charts below the cards. See COMPARABLE_UNIT_SLUGS for which units
+    are included."""
     units = [_company_compare_unit_entry(slug) for slug in COMPARABLE_UNIT_SLUGS]
 
     shahi1_elec = compute_electricity_summary()
@@ -553,15 +583,25 @@ def get_company_compare():
 
     return CompanyCompareSummary(
         units=units,
+        packingOutputMonths=_merge_month_series(
+            _unit_department_monthly_output("shahi-1", "Packing Dept"),
+            _unit_department_monthly_output("shahi-3", "Packing Dept"),
+            "units", CompanyCompareOutputMonthEntry, "shahi1Units", "shahi3Units",
+        ),
+        productionOutputMonths=_merge_month_series(
+            _unit_department_monthly_output("shahi-1", "Production Dept"),
+            _unit_department_monthly_output("shahi-3", "Production Dept"),
+            "units", CompanyCompareOutputMonthEntry, "shahi1Units", "shahi3Units",
+        ),
         electricityMonths=_merge_month_series(
             [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["costRs"]} for m in shahi1_elec_months],
             [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["electricityCostRs"]} for m in shahi3_elec_months],
-            "costRs",
+            "costRs", CompanyCompareMonthEntry, "shahi1Rs", "shahi3Rs",
         ),
         gasMonths=_merge_month_series(
             [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["totalCostRs"]} for m in shahi1_gas_months],
             [{"month": m["month"], "monthLabel": m["monthLabel"], "costRs": m["gasCostRs"]} for m in shahi3_gas_months],
-            "costRs",
+            "costRs", CompanyCompareMonthEntry, "shahi1Rs", "shahi3Rs",
         ),
     )
 
@@ -861,25 +901,34 @@ def get_unit_facility_cost(unit_slug: str):
 @router.get("/units/{unit_slug}/manufacturing-overhead", response_model=ManufacturingOverheadSummary)
 def get_unit_manufacturing_overhead(unit_slug: str):
     """Packing's and Production's own direct cost, each with the
-    whole-of-Shahi-3 Support Department total (Factory Admin & HR,
-    Maintenance, FG Store, Quality Assurance, RM Store, Tech. Store,
-    shared Compressor/equipment electricity) added on top, divided by
-    each department's own output -- "what a unit really costs once
-    overhead is loaded onto it." See
-    shahi3_cost.compute_shahi3_manufacturing_overhead for why the two
+    whole-of-unit Support department total added on top (Shahi 1: Factory
+    Administration & HR, FG Store, Maintenance - Electrical, Maintenance
+    - Mechanical, Management, Power Generation, QA Lab.R&D.QMS, RM STORE,
+    Tech. Store & Purchase, see labor_cost.SUPPORT_DEPARTMENTS; Shahi 3:
+    Factory Admin & HR, Maintenance, FG Store, Quality Assurance, RM
+    Store, Tech. Store, plus shared Compressor/equipment electricity, see
+    shahi3_cost.py's Support Department sheet), divided by each
+    department's own output -- "what a unit really costs once overhead
+    is loaded onto it." Shahi 1's own Packing figure also corrects for a
+    real gap: the Labor Cost Analysis workbook's own contractual-labour
+    estimate for Fry-O/Pops/Nimco is confirmed far smaller than the real
+    per-item contractor bills (contractor_labor.py), so the real figure
+    is used instead -- see labor_cost.compute_shahi1_manufacturing_overhead.
+    See either module's compute_*_manufacturing_overhead for why the two
     departments' own totalOverheadCostRs figures must never be summed
     together (each independently carries the FULL support cost, not a
-    split share of it). Today only Shahi 3 has this Support Department
-    breakdown -- 404 for Shahi 1 or any unit without it."""
-    if get_unit(unit_slug) is None:
+    split share of it). 404 for any unit without this data registered."""
+    unit = get_unit(unit_slug)
+    if unit is None:
         raise HTTPException(status_code=404, detail=f"unknown unit '{unit_slug}'")
-    if unit_slug != "shahi-3":
+    if unit_slug not in ("shahi-1", "shahi-3"):
         raise HTTPException(status_code=404, detail="no manufacturing overhead data registered")
+    compute = compute_shahi1_manufacturing_overhead if unit_slug == "shahi-1" else compute_shahi3_manufacturing_overhead
 
     departments = []
     for dept in departments_in_unit(unit_slug):
         workbook_label = dept.display_name.replace(" Dept", "")
-        result = compute_shahi3_manufacturing_overhead(workbook_label)
+        result = compute(workbook_label)
         if result is None:
             continue
         departments.append(ManufacturingOverheadDepartmentEntry(

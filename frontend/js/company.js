@@ -1,10 +1,12 @@
 // Company landing page: compares Shahi 1 and Shahi 3 at the top level --
-// overall OEE + total labor/electricity/gas cost per unit, then the two
-// facility-wide cost comparison charts below. One level above the unit
-// page (unit.js); clicking a unit's card drills into its own dashboard,
-// the same one Shahi 1 already had before Shahi 3 existed. See
-// backend/app/api/routes.py's get_company_compare for where this data
-// comes from and COMPARABLE_UNIT_SLUGS for which units are included.
+// overall OEE + total labor/electricity/gas cost per unit, then four
+// comparison charts below: Packing output (Packets), Production output
+// (KG), electricity cost, and gas cost -- in that order. One level above
+// the unit page (unit.js); clicking a unit's card drills into its own
+// dashboard, the same one Shahi 1 already had before Shahi 3 existed.
+// See backend/app/api/routes.py's get_company_compare for where this
+// data comes from and COMPARABLE_UNIT_SLUGS for which units are
+// included.
 const Company = (() => {
   const el = (id) => document.getElementById(id);
 
@@ -12,6 +14,8 @@ const Company = (() => {
     const compare = await Api.getCompanyCompare();
     renderHeader();
     renderCards(compare.units);
+    renderPackingOutputSection(compare.packingOutputMonths);
+    renderProductionOutputSection(compare.productionOutputMonths);
     renderElectricitySection(compare.electricityMonths);
     renderGasSection(compare.gasMonths);
   }
@@ -67,6 +71,34 @@ const Company = (() => {
         </div>
       `;
       container.appendChild(card);
+    });
+  }
+
+  function renderPackingOutputSection(months) {
+    const section = el("companyPackingOutputSection");
+    if (!months || months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    Charts.renderUnitCompareChart("companyPackingOutputChart", months, {
+      valueKeys: ["shahi1Units", "shahi3Units"],
+      axisLabel: "Output (Packets)",
+      formatValue: (v) => `${v.toLocaleString()} Packets`,
+    });
+  }
+
+  function renderProductionOutputSection(months) {
+    const section = el("companyProductionOutputSection");
+    if (!months || months.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    Charts.renderUnitCompareChart("companyProductionOutputChart", months, {
+      valueKeys: ["shahi1Units", "shahi3Units"],
+      axisLabel: "Output (KG)",
+      formatValue: (v) => `${v.toLocaleString()} KG`,
     });
   }
 

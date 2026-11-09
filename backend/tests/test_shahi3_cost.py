@@ -39,18 +39,24 @@ def test_facility_cost_value_column_found_by_month_name_not_fixed_position():
     assert mar["electricityCostRs"] == 2094307
 
 
-def test_facility_cost_excludes_april_due_to_source_data_error():
+def test_facility_cost_april_uses_manual_override_not_source_file():
     """April-26's own Dept.Wise Cost Sheet workbook has its Expense Detail
     LHR header still reading "March" with March's own figures duplicated
     into it (apparently never updated after being copied from March's
-    file) -- searching for "April" specifically must fail to find that
-    column rather than silently reusing March's numbers under April's
-    label."""
+    file) -- searching for "April" specifically fails to find that
+    column, so the normal content-based parser alone would exclude April
+    entirely rather than silently reusing March's numbers under April's
+    label. FACILITY_COST_OVERRIDES fills it in instead, with the real
+    April-26 figures given directly by the person running the dashboard:
+    electricity Rs. 2,453,665, gas Rs. 6,955,005 -- NOT March's duplicated
+    Rs. 2,094,307 / whatever gas figure March's file carries."""
     result = compute_shahi3_facility_cost()
     assert result is not None
-    months = [m["month"] for m in result["months"]]
-    assert "2026-04" not in months
-    assert "2026-03" in months and "2026-05" in months
+    apr = next(m for m in result["months"] if m["month"] == "2026-04")
+    assert apr["electricityCostRs"] == 2453665.0
+    assert apr["gasCostRs"] == 6955005.0
+    mar = next(m for m in result["months"] if m["month"] == "2026-03")
+    assert apr["electricityCostRs"] != mar["electricityCostRs"]
 
 
 def test_lhr_nimco_1_august_matches_hand_calculation():
@@ -176,14 +182,19 @@ def test_manufacturing_overhead_packing_august_matches_hand_calculation():
     _load_all()'s own packing_total/support buckets): Packing's own TRUE
     total (all 5 lines: Rs. 3,717,325 payroll + Rs. 410,966 contractor
     payment + Rs. 699,657.7712 electricity) plus Support Department's
-    total (Rs. 4,801,995 payroll + Rs. 1,094,419.56 electricity),
-    against Packing's own 21,096,432 total packs that month."""
+    total (Rs. 4,801,995 payroll + Rs. 1,094,419.56 electricity) plus
+    Packing's own Maintenance & Repair total that month (see
+    test_maintenance_cost.py's Shahi 3 tests), against Packing's own
+    21,096,432 total packs that month."""
     result = compute_shahi3_manufacturing_overhead("Packing")
     assert result is not None
     aug = next(m for m in result["months"] if m["month"] == "2026-08")
     assert aug["departmentCostRs"] == round(3717325 + 410966 + 699657.7712, 2)
     assert aug["supportCostRs"] == round(4801995 + 1094419.56, 2)
-    assert aug["totalOverheadCostRs"] == round(aug["departmentCostRs"] + aug["supportCostRs"], 2)
+    assert aug["maintenanceRepairCostRs"] is not None and aug["maintenanceRepairCostRs"] > 0
+    assert aug["totalOverheadCostRs"] == round(
+        aug["departmentCostRs"] + aug["supportCostRs"] + aug["maintenanceRepairCostRs"], 2
+    )
     assert aug["costPerThousandUnits"] == round(aug["totalOverheadCostRs"] / 21096432 * 1000, 2)
 
 

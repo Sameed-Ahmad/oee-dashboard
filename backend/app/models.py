@@ -154,12 +154,29 @@ class LaborCostMonthEntry(BaseModel):
     outputUnit: str  # "Packets" | "KG"
     costPerThousandUnits: float  # Rs. per 1,000 units of output (more readable than the raw per-unit fraction)
     manHoursPerThousandUnits: float | None
+    # The TRUE Permanent-only portion of laborCost (from the raw "Shahi-1"
+    # sheet, which reports Permanent/Contractual separately -- laborCost
+    # above is already their combined total). Shahi 1 only; None for Shahi 3
+    # (no such split exists at that source). When present, the frontend
+    # shows THIS as "Permanent Labour Cost" instead of laborCost as
+    # "Labor Cost" -- laborCost/costPerThousandUnits stay populated
+    # regardless, for Total Cost's own fallback when no real contractual
+    # data exists (see labor_cost.py).
+    permanentLaborCostRs: float | None = None
+    permanentCostPerThousandUnits: float | None = None
     # Standalone figure from the per-item contractor bills (contractor_labor.py) --
     # NOT part of laborCost/costPerThousandUnits above. None if no contractor bill
     # data covers this product+month (e.g. Ishida, which has no contractor file).
     contractualLaborCostRs: float | None = None
     contractualCostPerThousandUnits: float | None = None
     contractors: list[ContractorBreakdownEntry] = []
+    # Permanent-only labor (from the raw Shahi-1 sheet, Shahi 1 only) + the
+    # REAL contractual figure above -- NOT laborCost + contractualLaborCostRs,
+    # which would double-count the workbook's own (understated) contractual
+    # estimate already baked into laborCost. None for Shahi 3 (no such
+    # correction exists there).
+    totalCostRs: float | None = None
+    totalCostPerThousandUnits: float | None = None
 
 
 class ProductLaborCostSummary(BaseModel):
@@ -277,8 +294,9 @@ class ManufacturingOverheadMonthEntry(BaseModel):
     output: float
     outputUnit: str  # "Packets" | "KG"
     departmentCostRs: float  # this department's own direct cost (labor + electricity), every line not just registered products
-    supportCostRs: float  # whole-of-Shahi-3 Support Department total -- NOT split between Packing/Production, see shahi3_cost.py
-    totalOverheadCostRs: float  # departmentCostRs + supportCostRs
+    supportCostRs: float  # whole-of-unit Support Department total -- NOT split between Packing/Production, see shahi3_cost.py / labor_cost.py
+    maintenanceRepairCostRs: float | None = None  # Shahi 1 only, see maintenance_cost.py -- NOT split between Packing/Production either
+    totalOverheadCostRs: float  # departmentCostRs + supportCostRs (+ maintenanceRepairCostRs where present)
     costPerThousandUnits: float
 
 
@@ -413,8 +431,17 @@ class CompanyCompareMonthEntry(BaseModel):
     shahi3Rs: float | None
 
 
+class CompanyCompareOutputMonthEntry(BaseModel):
+    month: str  # "2026-08"
+    monthLabel: str  # "August 2026"
+    shahi1Units: float | None  # Packets (packingOutputMonths) or KG (productionOutputMonths)
+    shahi3Units: float | None
+
+
 class CompanyCompareSummary(BaseModel):
     units: list[CompanyCompareUnitEntry]
+    packingOutputMonths: list[CompanyCompareOutputMonthEntry]  # Packets, both units' Packing Dept
+    productionOutputMonths: list[CompanyCompareOutputMonthEntry]  # KG, both units' Production Dept
     electricityMonths: list[CompanyCompareMonthEntry]
     gasMonths: list[CompanyCompareMonthEntry]
 

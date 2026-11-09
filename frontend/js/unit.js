@@ -62,6 +62,18 @@ const Unit = (() => {
         const s = d.summary;
         const c = d.costs;
         const tier = Utils.tierFor(s.avgOeePct);
+
+        // Each department card shows Labor cost and Electricity cost at
+        // the SAME scale as each other -- Production (KG) per single KG,
+        // Packing (Packets) per 1,000 Packets -- rather than mixing a
+        // "/1,000" labor figure with a "/single-unit" electricity figure
+        // on the same card.
+        const perKg = c.laborCostOutputUnit === "KG";
+        const laborLabel = perKg ? "Labor cost / KG" : `Labor cost / 1,000 ${c.laborCostOutputUnit}`;
+        const laborValue = perKg && c.laborCostPerThousandUnits != null ? c.laborCostPerThousandUnits / 1000 : c.laborCostPerThousandUnits;
+        const electricityLabel = perKg ? "Electricity cost / KG" : "Electricity cost / 1,000 Packets";
+        const electricityValue = perKg || c.electricityCostPerUnitRs == null ? c.electricityCostPerUnitRs : c.electricityCostPerUnitRs * 1000;
+
         const card = document.createElement("a");
         card.className = "product-card";
         card.href = `#/department/${d.slug}`;
@@ -77,16 +89,16 @@ const Unit = (() => {
               <strong>${c.totalLaborCostRs != null ? formatRs(c.totalLaborCostRs) : "—"}</strong>
               <small>${monthRangeLabel(c.laborCostFirstMonth, c.laborCostLastMonth)}</small>
             </div>
-            ${c.laborCostPerThousandUnits != null ? `
+            ${laborValue != null ? `
             <div>
-              <span>Labor cost / 1,000 ${c.laborCostOutputUnit}</span>
-              <strong>${formatRs(c.laborCostPerThousandUnits)}</strong>
+              <span>${laborLabel}</span>
+              <strong>Rs. ${laborValue.toLocaleString(undefined, { maximumFractionDigits: perKg ? 2 : 0 })}</strong>
             </div>
             ` : ""}
-            ${c.electricityCostPerUnitRs != null ? `
+            ${electricityValue != null ? `
             <div>
-              <span>Electricity cost / ${c.laborCostOutputUnit === "Packets" ? "Packet" : c.laborCostOutputUnit}</span>
-              <strong>Rs. ${c.electricityCostPerUnitRs.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>
+              <span>${electricityLabel}</span>
+              <strong>Rs. ${electricityValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>
             </div>
             ` : ""}
             ${c.gasCostGroups.map((g) => `
@@ -257,9 +269,11 @@ const Unit = (() => {
     `;
   }
 
-  // Shahi 3 only -- see backend/app/shahi3_cost.py's
-  // compute_shahi3_manufacturing_overhead. One sub-block per department
-  // (built dynamically since the chart/table need their own canvas/table
+  // Shahi 1 and Shahi 3 both -- see backend/app/labor_cost.py's
+  // compute_shahi1_manufacturing_overhead and backend/app/shahi3_cost.py's
+  // compute_shahi3_manufacturing_overhead (same response shape, one
+  // renderer serves both). One sub-block per department (built
+  // dynamically since the chart/table need their own canvas/table
   // ids per department), each a stacked bar (department's own cost +
   // Support Department's cost) plus a table with the same breakdown.
   function renderOverheadSection(overhead) {
@@ -282,6 +296,7 @@ const Unit = (() => {
     overhead.departments.forEach((d) => {
       const months = d.months;
       const unit = months[0].outputUnit;
+      const hasMaintenance = months.some((m) => m.maintenanceRepairCostRs != null);
       Charts.renderOverheadChart(`overheadChart-${d.departmentSlug}`, months);
 
       el(`overheadTable-${d.departmentSlug}`).innerHTML = `
@@ -291,6 +306,7 @@ const Unit = (() => {
             <th class="numeric">Output (${unit})</th>
             <th class="numeric">Department Cost (Rs.)</th>
             <th class="numeric">Support Dept Cost (Rs.)</th>
+            ${hasMaintenance ? `<th class="numeric">Maintenance &amp; Repair Cost (Rs.)</th>` : ""}
             <th class="numeric">Total Overhead Cost (Rs.)</th>
             <th class="numeric">Cost / 1,000 ${unit}</th>
           </tr>
@@ -302,6 +318,7 @@ const Unit = (() => {
               <td class="numeric">${m.output.toLocaleString()}</td>
               <td class="numeric">${formatRs(m.departmentCostRs)}</td>
               <td class="numeric">${formatRs(m.supportCostRs)}</td>
+              ${hasMaintenance ? `<td class="numeric">${m.maintenanceRepairCostRs != null ? formatRs(m.maintenanceRepairCostRs) : "—"}</td>` : ""}
               <td class="numeric">${formatRs(m.totalOverheadCostRs)}</td>
               <td class="numeric">${m.costPerThousandUnits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
             </tr>

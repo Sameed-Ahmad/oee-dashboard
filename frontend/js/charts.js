@@ -569,6 +569,7 @@ const Charts = (() => {
   function renderOverheadChart(canvasId, months) {
     destroy(canvasId);
     const ctx = document.getElementById(canvasId).getContext("2d");
+    const hasMaintenance = months.some((m) => m.maintenanceRepairCostRs != null);
     instances[canvasId] = new Chart(ctx, {
       type: "bar",
       data: {
@@ -588,6 +589,13 @@ const Charts = (() => {
             borderWidth: 0,
             stack: "overhead",
           },
+          ...(hasMaintenance ? [{
+            label: "Maintenance & Repair cost (Rs.)",
+            data: months.map((m) => m.maintenanceRepairCostRs),
+            backgroundColor: cssVar("--line-avail"),
+            borderWidth: 0,
+            stack: "overhead",
+          }] : []),
         ],
       },
       options: {
@@ -662,7 +670,16 @@ const Charts = (() => {
   // months: [{monthLabel, shahi1Rs, shahi3Rs}] -- side-by-side grouped
   // bars, one axis (both series are Rs.), null bars where a unit has no
   // data that month (Chart.js just skips drawing that bar, not a 0).
-  function renderUnitCompareChart(canvasId, months) {
+  // options lets the same chart serve both cost (Rs., the default --
+  // shahi1Rs/shahi3Rs fields) and output (Packets/KG -- shahi1Units/
+  // shahi3Units fields, see CompanyCompareOutputMonthEntry) comparisons
+  // without duplicating the Chart.js config.
+  function renderUnitCompareChart(canvasId, months, options = {}) {
+    const {
+      valueKeys = ["shahi1Rs", "shahi3Rs"],
+      axisLabel = "Cost (Rs.)",
+      formatValue = (v) => `Rs. ${v.toLocaleString()}`,
+    } = options;
     destroy(canvasId);
     const ctx = document.getElementById(canvasId).getContext("2d");
     instances[canvasId] = new Chart(ctx, {
@@ -671,14 +688,14 @@ const Charts = (() => {
         labels: months.map((m) => m.monthLabel),
         datasets: [
           {
-            label: "Shahi 1 (Rs.)",
-            data: months.map((m) => m.shahi1Rs),
+            label: "Shahi 1",
+            data: months.map((m) => m[valueKeys[0]]),
             backgroundColor: cssVar("--maroon"),
             borderWidth: 0,
           },
           {
-            label: "Shahi 3 (Rs.)",
-            data: months.map((m) => m.shahi3Rs),
+            label: "Shahi 3",
+            data: months.map((m) => m[valueKeys[1]]),
             backgroundColor: cssVar("--gold"),
             borderWidth: 0,
           },
@@ -692,7 +709,7 @@ const Charts = (() => {
           legend: { position: "bottom", labels: { font: baseFont(), boxWidth: 12 } },
           tooltip: {
             callbacks: {
-              label: (item) => `${item.dataset.label}: Rs. ${item.parsed.y.toLocaleString()}`,
+              label: (item) => `${item.dataset.label}: ${formatValue(item.parsed.y)}`,
             },
           },
         },
@@ -700,7 +717,7 @@ const Charts = (() => {
           x: { ticks: { font: baseFont() }, grid: { display: false } },
           y: {
             min: 0,
-            title: { display: true, text: "Cost (Rs.)", font: baseFont() },
+            title: { display: true, text: axisLabel, font: baseFont() },
             ticks: { font: baseFont(), callback: (v) => v.toLocaleString() },
             grid: { color: cssVar("--border") },
           },

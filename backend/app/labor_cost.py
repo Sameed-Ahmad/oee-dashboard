@@ -41,6 +41,7 @@ from pathlib import Path
 import openpyxl
 
 from .contractor_labor import get_contractual_month
+from .maintenance_cost import compute_maintenance_repair_cost
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 1" / "labour cost"
 
@@ -81,6 +82,34 @@ PRODUCT_SOURCE_LINES: dict[str, list[str]] = {
 }
 
 SHARED_PRODUCTS = {"coated-peanut", "namak-para"}
+
+RAW_SHEET_NAME = "Shahi-1"
+
+# The raw "Shahi-1" sheet's own department grouping -- every top-level
+# department EXCEPT Packing and Production, confirmed identical (same 9
+# names) on both the raw sheet and the "Shahi-1 Report" sheet's Total
+# Labor Cost table, across Jan-26 and Aug-26. Shahi 3's analogous figure
+# comes from a dedicated "Support Department" sheet; here the same kind
+# of cost sits as ordinary top-level rows in the same table as Packing/
+# Production.
+SUPPORT_DEPARTMENTS = [
+    "Factory Administration & HR", "FG Store", "Maintenance - Electrical",
+    "Maintenance - Mechanical", "Management", "Power Generation",
+    "QA Lab.R&D,QMS", "RM STORE", "Tech. Store & Purchase",
+]
+
+# Packing sub-line (raw "Shahi-1" sheet label, same strings as
+# PRODUCT_SOURCE_LINES) -> product slug, for every Packing product --
+# used to look up contractor_labor.py's real per-item contractual figure
+# for that line. get_contractual_month naturally returns None for Ishida
+# (no contractor file exists for it), so no code branch is needed to
+# special-case it -- it falls straight through to "use this line's own
+# total unchanged" in compute_shahi1_manufacturing_overhead /
+# compute_department_labor_cost.
+PACKING_LINE_TO_SLUG = {
+    line: slug for slug, lines in PRODUCT_SOURCE_LINES.items()
+    for line in lines if line.startswith("Packing")
+}
 
 _workbook_cache: object | None = None
 _workbook_loaded = False
@@ -146,6 +175,118 @@ def _department_lines(ws, table_header_row: int, department: str) -> dict[str, i
     return lines
 
 
+def _find_raw_month_blocks(ws) -> dict[str, int]:
+    """{"2026-01": 3, ...} -- each month's block-start column (the
+    "Permanent # staff" column of that month's own 9-column block) on
+    the raw "Shahi-1" sheet, located by its own "For the month of
+    <Mon>-<Year>" marker in row 2 -- not fixed arithmetic (every block IS
+    9 columns wide in practice, but relying on that alone would silently
+    misalign if a month's block were ever inserted/resized)."""
+    blocks: dict[str, int] = {}
+    month_re = re.compile(r"for the month of\s+([a-z]+)-(\d{4})", re.IGNORECASE)
+    abbr_lower = [a.lower() for a in MONTH_ABBR]
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=2, column=c).value
+        if not isinstance(v, str):
+            continue
+        m = month_re.search(v.strip().lower())
+        if not m:
+            continue
+        mon_abbr, year = m.group(1)[:3], m.group(2)
+        if mon_abbr not in abbr_lower:
+            continue
+        month_num = abbr_lower.index(mon_abbr) + 1
+        blocks[f"{year}-{month_num:02d}"] = c
+    return blocks
+
+
+def _parse_raw_shahi1_sheet(ws) -> dict[str, dict]:
+    """Returns {month_key: {"lines": {sub_department_label:
+    {"permanentRs", "contractualRs", "totalRs"}}, "departmentOf":
+    {sub_department_label: top_level_department}}}.
+
+    Reads the RAW "Shahi-1" sheet -- NOT the "Shahi-1 Report" sheet's own
+    pre-combined Total Labor Cost table everything else in this module
+    uses -- because this is the only place Permanent and the workbook's
+    own Contractual figures are reported SEPARATELY per line, needed to
+    replace Packing's understated contractual portion with the real
+    figure from contractor_labor.py (see
+    compute_shahi1_manufacturing_overhead)."""
+    blocks = _find_raw_month_blocks(ws)
+    if not blocks:
+        return {}
+
+    header_row = None
+    for r in range(1, 6):
+        if ws.cell(row=r, column=1).value == "Department":
+            header_row = r
+            break
+    if header_row is None:
+        return {}
+
+    result: dict[str, dict] = {}
+    for month_key, start_col in blocks.items():
+        perm_col, contract_col, total_col = start_col + 2, start_col + 5, start_col + 8
+        lines: dict[str, dict] = {}
+        department_of: dict[str, str] = {}
+        current_dept: str | None = None
+        for r in range(header_row + 1, ws.max_row + 1):
+            a = ws.cell(row=r, column=1).value
+            if isinstance(a, str) and a.strip().lower() == "total":
+                break
+            if isinstance(a, str) and a.strip():
+                current_dept = " ".join(a.split())
+            b = ws.cell(row=r, column=2).value
+            if not isinstance(b, str) or not b.strip():
+                continue
+            sub_label = " ".join(b.split())
+            lines[sub_label] = {
+                "permanentRs": _num(ws.cell(row=r, column=perm_col).value) or 0.0,
+                "contractualRs": _num(ws.cell(row=r, column=contract_col).value) or 0.0,
+                "totalRs": _num(ws.cell(row=r, column=total_col).value) or 0.0,
+            }
+            if current_dept:
+                department_of[sub_label] = current_dept
+        if lines:
+            result[month_key] = {"lines": lines, "departmentOf": department_of}
+    return result
+
+
+def _corrected_packing_cost(lines: dict[str, dict], department_of: dict[str, str], month_key: str) -> float:
+    """One month's Packing Dept total, with each line that has real
+    per-item contractor-bill data (contractor_labor.py) -- today Fry-O,
+    Pops, and Nimco -- corrected to Permanent + that REAL contractual
+    figure instead of the line's own contractual figure, confirmed to
+    understate the real one by a wide margin (e.g. Fry-O Jan-26: the
+    workbook's own Contractual column says Rs. 134,988; the real
+    contractor bills for that same month total Rs. 1,060,974 -- nearly
+    8x higher). Lines with no contractor-bill data (Ishida, Printing)
+    keep their own existing total unchanged, since there's no better
+    figure available for them.
+
+    Nimco is filed as two raw-sheet lines (R-10, R-20/R-30) that both
+    resolve to the same "nimco" slug -- its real contractual figure
+    already covers both combined, so it's added only once (on whichever
+    line is encountered first), with the second line contributing its
+    own Permanent portion only, never a second copy of the real
+    contractual total."""
+    cost = 0.0
+    slugs_applied: set[str] = set()
+    for sub_label, data in lines.items():
+        if department_of.get(sub_label) != "Packing":
+            continue
+        slug = PACKING_LINE_TO_SLUG.get(sub_label)
+        real_contractual = get_contractual_month(slug, month_key) if slug else None
+        if real_contractual:
+            cost += data["permanentRs"]
+            if slug not in slugs_applied:
+                cost += real_contractual["costRs"]
+                slugs_applied.add(slug)
+        else:
+            cost += data["totalRs"]
+    return cost
+
+
 def compute_labor_cost_summary(slug: str) -> dict | None:
     """Returns {"sourceLines": [...], "shared": bool, "months": [...]}, or
     None if this product has no labor-cost line registered at all -- no
@@ -174,6 +315,8 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
     output_lines = _department_lines(ws, output_header_row, department)
     hours_lines = _department_lines(ws, hours_header_row, department)
     cost_lines = _department_lines(ws, cost_header_row, department)
+
+    raw = _parse_raw_shahi1_sheet(wb[RAW_SHEET_NAME]) if RAW_SHEET_NAME in wb.sheetnames else {}
 
     unit = ""
     for line in source_lines:
@@ -213,6 +356,32 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
         contractual_cost = contractual["costRs"] if contractual else None
         contractors = contractual["contractors"] if contractual else []
 
+        # laborCost (this Report-sheet figure) is Permanent + the
+        # workbook's OWN contractual estimate combined -- confirmed far
+        # smaller than the real per-item contractor bills for
+        # Fry-O/Pops/Nimco (e.g. Fry-O Jan-26: workbook's own Contractual
+        # column Rs. 134,988 vs. the real bills' Rs. 1,060,974).
+        # permanentLaborCostRs pulls the TRUE Permanent-only portion out
+        # of that blend, from the raw "Shahi-1" sheet (None if that sheet
+        # has no data for this month). "Total Cost" then simply adds the
+        # REAL contractual on top of permanentLaborCostRs (never
+        # laborCost + contractualLaborCostRs, which would double-count
+        # the workbook's own estimate) -- same corrected approach as
+        # _corrected_packing_cost, just per product instead of for the
+        # whole department. Where no real contractual exists for this
+        # product (Ishida), totalCostRs falls back to laborCost unchanged
+        # (nothing to correct, nothing better to use) rather than
+        # dropping that workbook estimate from the total entirely.
+        month_raw = raw.get(month_key)
+        permanent_sum = (
+            sum(month_raw["lines"][line]["permanentRs"] for line in source_lines if line in month_raw["lines"])
+            if month_raw is not None else None
+        )
+        if permanent_sum is not None and contractual_cost is not None:
+            full_total_cost = permanent_sum + contractual_cost
+        else:
+            full_total_cost = total_cost
+
         months_result.append({
             "month": month_key,
             "monthLabel": f"{MONTH_NAMES[month_idx]} {year}",
@@ -222,9 +391,13 @@ def compute_labor_cost_summary(slug: str) -> dict | None:
             "outputUnit": unit,
             "costPerThousandUnits": round(total_cost / total_output * 1000, 2),
             "manHoursPerThousandUnits": round(total_hours / total_output * 1000, 3),
+            "permanentLaborCostRs": round(permanent_sum, 2) if permanent_sum is not None else None,
+            "permanentCostPerThousandUnits": round(permanent_sum / total_output * 1000, 2) if permanent_sum is not None else None,
             "contractualLaborCostRs": contractual_cost,
             "contractualCostPerThousandUnits": round(contractual_cost / total_output * 1000, 2) if contractual_cost is not None else None,
             "contractors": contractors,
+            "totalCostRs": round(full_total_cost, 2),
+            "totalCostPerThousandUnits": round(full_total_cost / total_output * 1000, 2),
         })
 
     return {
@@ -337,15 +510,26 @@ def compute_department_labor_cost(department: str, product_slugs: list[str] | No
     correctly output-weighted across months of very different volume.
 
     If `product_slugs` is given (every product under this department), the
-    per-item contractor bills (contractor_labor.py) are also summed in for
-    those same months and folded into totalRs/costPerThousandUnits --
-    unlike compute_labor_cost_summary's per-PRODUCT figures (which keep
-    the two deliberately separate so a product's own table can show both),
-    this department-wide card is meant to read as one genuine "what did
-    labor cost us" total, so here they're combined. laborOnlyRs/
-    contractualRs are also returned individually for transparency.
+    per-item contractor bills (contractor_labor.py) are also folded into
+    totalRs/costPerThousandUnits -- unlike compute_labor_cost_summary's
+    per-PRODUCT figures (which keep the two deliberately separate so a
+    product's own table can show both), this department-wide card is
+    meant to read as one genuine "what did labor cost us" total.
     Omitting product_slugs (or passing none) leaves contractualRs at 0,
     i.e. totalRs == laborOnlyRs, same as before this parameter existed.
+
+    For "Production", this is a straight add: `total_cost` (this
+    workbook's own Total Labor Cost row) + the real contractual figure.
+    For "Packing", a straight add would DOUBLE-COUNT: this workbook's own
+    Total Labor Cost row already includes its OWN (confirmed understated
+    -- see _corrected_packing_cost) contractual estimate for Fry-O/Pops/
+    Nimco, so adding the real figure on top would count that portion
+    twice. Packing instead uses _corrected_packing_cost, which replaces
+    -- not adds to -- each line's own contractual estimate with the real
+    one where available, keeping the line's own total unchanged where
+    it isn't (Ishida, Printing). laborOnlyRs there is redefined as the
+    pure Permanent-only sum (not "workbook total minus correction") so
+    laborOnlyRs + contractualRs == totalRs stays true either way.
 
     Returns None if the workbook, either table, or this department's row
     in either can't be found, or no month has both cost and output
@@ -391,21 +575,135 @@ def compute_department_labor_cost(department: str, product_slugs: list[str] | No
     if not months_included:
         return None
 
-    contractual_cost = 0.0
-    for slug in product_slugs or []:
+    if department == "Packing" and product_slugs and RAW_SHEET_NAME in wb.sheetnames:
+        raw = _parse_raw_shahi1_sheet(wb[RAW_SHEET_NAME])
+        combined_cost = 0.0
+        permanent_sum = 0.0
         for month_key in months_included:
-            contractual_month = get_contractual_month(slug, month_key)
-            if contractual_month:
-                contractual_cost += contractual_month["costRs"]
-
-    combined_cost = total_cost + contractual_cost
+            month_raw = raw.get(month_key)
+            if month_raw is None:
+                combined_cost += 0.0  # no raw-sheet data for this month -- see fallback below
+                continue
+            lines, department_of = month_raw["lines"], month_raw["departmentOf"]
+            combined_cost += _corrected_packing_cost(lines, department_of, month_key)
+            permanent_sum += sum(
+                data["permanentRs"] for label, data in lines.items() if department_of.get(label) == "Packing"
+            )
+        if combined_cost <= 0:
+            combined_cost, permanent_sum = total_cost, total_cost  # raw sheet unavailable -- fall back to the uncorrected total
+        contractual_cost = combined_cost - permanent_sum
+    else:
+        contractual_cost = 0.0
+        for slug in product_slugs or []:
+            for month_key in months_included:
+                contractual_month = get_contractual_month(slug, month_key)
+                if contractual_month:
+                    contractual_cost += contractual_month["costRs"]
+        combined_cost = total_cost + contractual_cost
+        permanent_sum = total_cost - contractual_cost
 
     return {
         "totalRs": round(combined_cost, 2),
-        "laborOnlyRs": round(total_cost, 2),
+        "laborOnlyRs": round(permanent_sum, 2),
         "contractualRs": round(contractual_cost, 2),
         "firstMonth": months_included[0],
         "lastMonth": months_included[-1],
         "costPerThousandUnits": round(combined_cost / total_output * 1000, 2),
         "outputUnit": unit,
     }
+
+
+def compute_shahi1_manufacturing_overhead(department: str) -> dict | None:
+    """Month by month: this department's own direct labor cost (Packing
+    gets the same correction as compute_department_labor_cost -- real
+    contractor bills swapped in for Fry-O/Pops/Nimco instead of the
+    workbook's own understated contractual figure, see
+    _corrected_packing_cost; Production uses its own Total Labor Cost
+    row unchanged, since no independent contractor-bill data exists to
+    correct it with) PLUS the sum of every Support department's own
+    Total Labor Cost (see SUPPORT_DEPARTMENTS) PLUS this department's own
+    Maintenance & Repair cost (see maintenance_cost.py's separate
+    transaction-level ERP export), divided by this department's own
+    output -- "what a unit really costs once overhead is loaded onto
+    it," the same concept as shahi3_cost.py's
+    compute_shahi3_manufacturing_overhead (same return shape too, so one
+    frontend renderer serves both units).
+
+    No electricity component -- unlike Shahi 3's version, Shahi-1's
+    electricity data (electricity.py) is only ever a single facility-wide
+    total, not split by department or by Support vs. Packing/Production,
+    so there's no reliable way to add it here without inventing a split
+    the source data doesn't support.
+
+    Support's and Maintenance & Repair's costs are NOT split between
+    Packing and Production -- each call independently adds the FULL
+    amount of both, so the two departments' own totalOverheadCostRs
+    figures must never be summed together (that would double-count
+    them)."""
+    if department not in ("Packing", "Production"):
+        return None
+
+    wb = _load_workbook()
+    if wb is None or REPORT_SHEET_NAME not in wb.sheetnames or RAW_SHEET_NAME not in wb.sheetnames:
+        return None
+    ws = wb[REPORT_SHEET_NAME]
+    raw = _parse_raw_shahi1_sheet(wb[RAW_SHEET_NAME])
+    if not raw:
+        return None
+
+    maintenance_result = compute_maintenance_repair_cost(department, unit_slug="shahi-1")
+    maintenance_by_month = (
+        {m["month"]: m["maintenanceRepairCostRs"] for m in maintenance_result["months"]}
+        if maintenance_result else {}
+    )
+
+    output_table = _find_table(ws, TABLE_HEADERS["output"])
+    if output_table is None:
+        return None
+    output_header_row, output_months = output_table
+    output_row = _department_total_row(ws, output_header_row, department)
+    if output_row is None:
+        return None
+    unit = ws.cell(row=output_row, column=3).value or ""
+
+    def sort_key(header: str) -> tuple[int, int]:
+        mon, year = header.split("-")
+        return int(year), MONTH_ABBR.index(mon)
+
+    months = []
+    for header in sorted(output_months, key=sort_key):
+        mon, year = header.split("-")
+        month_idx = MONTH_ABBR.index(mon)
+        month_key = f"{year}-{month_idx + 1:02d}"
+        month_raw = raw.get(month_key)
+        if month_raw is None:
+            continue
+        output_value = _num(ws.cell(row=output_row, column=output_months[header]).value)
+        if not output_value or output_value <= 0:
+            continue
+
+        lines, department_of = month_raw["lines"], month_raw["departmentOf"]
+        if department == "Packing":
+            dept_cost = _corrected_packing_cost(lines, department_of, month_key)
+        else:
+            dept_cost = sum(
+                data["totalRs"] for label, data in lines.items() if department_of.get(label) == "Production"
+            )
+        support_cost = sum(
+            data["totalRs"] for label, data in lines.items() if department_of.get(label) in SUPPORT_DEPARTMENTS
+        )
+        maintenance_cost = maintenance_by_month.get(month_key, 0.0)
+        total_cost = dept_cost + support_cost + maintenance_cost
+
+        months.append({
+            "month": month_key,
+            "monthLabel": f"{MONTH_NAMES[month_idx]} {year}",
+            "output": round(output_value, 1),
+            "outputUnit": unit,
+            "departmentCostRs": round(dept_cost, 2),
+            "supportCostRs": round(support_cost, 2),
+            "maintenanceRepairCostRs": round(maintenance_cost, 2),
+            "totalOverheadCostRs": round(total_cost, 2),
+            "costPerThousandUnits": round(total_cost / output_value * 1000, 2),
+        })
+    return {"months": months} if months else None

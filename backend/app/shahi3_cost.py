@@ -23,8 +23,10 @@ with the real absolute figures this module actually reads:
   Admin & HR, Maintenance, FG Store, Quality Assurance, RM Store, Tech.
   Store) plus one shared-equipment electricity-only line, each with
   Total Payroll + Total Electricity Cost -- see
-  compute_shahi3_manufacturing_overhead for how this feeds the
-  overhead-loaded Packing/Production cost-per-unit figures.
+  compute_shahi3_manufacturing_overhead for how this, plus a separate
+  Maintenance & Repair figure (maintenance_cost.py, Shahi 3's own CSI
+  transaction-level ERP export), feeds the overhead-loaded Packing/
+  Production cost-per-unit figures.
 
 Department-label -> dashboard-product-slug mapping (confirmed with the
 person running this dashboard, 2026-10-27):
@@ -71,6 +73,8 @@ from pathlib import Path
 
 import openpyxl
 
+from .maintenance_cost import compute_maintenance_repair_cost
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "Shahi 3" / "Labour and Energy"
 
 MONTH_ABBR_TO_NUM = {
@@ -81,6 +85,20 @@ MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 ]
+
+# Manual correction for a month whose own source file can't be trusted --
+# April-26's "Dept.Wise Cost Sheet" workbook has its Expense Detail LHR
+# header still reading "March" with March's own figures duplicated into
+# it (see _parse_expense_detail_sheet's docstring), so the normal
+# content-based column search correctly finds nothing for "April" rather
+# than silently reusing March's numbers. These are the real April-26
+# figures, given directly by the person running the dashboard (not
+# derived from this workbook, since nothing in it can be trusted for
+# that month) -- remove this once April's own source file is corrected
+# at the source and re-uploaded.
+FACILITY_COST_OVERRIDES: dict[str, dict] = {
+    "2026-04": {"electricityCostRs": 2453665.0, "gasCostRs": 6955005.0},
+}
 
 # Packing-sheet "Total <X> Department" label -> the slug(s) it feeds.
 # Where more than one label maps to the same slug, their absolute figures
@@ -356,6 +374,8 @@ def _load_all() -> dict:
             if "Expense Detail LHR" in wb.sheetnames:
                 month_name = MONTH_NAMES[int(month_key[5:7]) - 1]
                 expense = _parse_expense_detail_sheet(wb["Expense Detail LHR"], month_name)
+                if month_key in FACILITY_COST_OVERRIDES:
+                    expense = FACILITY_COST_OVERRIDES[month_key]
                 facility[month_key] = {"monthLabel": month_label, **expense}
             wb.close()
 
@@ -490,25 +510,34 @@ def compute_shahi3_manufacturing_overhead(department: str) -> dict | None:
     the whole-of-Shahi-3 Support Department total (Factory Admin & HR,
     Maintenance, FG Store, Quality Assurance, RM Store, Tech. Store,
     shared Compressor/equipment electricity -- see
-    _parse_support_department_sheet), divided by this department's own
+    _parse_support_department_sheet) PLUS this department's own
+    Maintenance & Repair cost (see maintenance_cost.py's separate
+    transaction-level ERP export), divided by this department's own
     output -- "what a unit really costs once overhead is loaded onto
     it," which is what a manufacturing overhead figure means.
 
-    Support's cost is NOT split between Packing and Production -- each
-    call independently adds the FULL support total, matching how the
-    source workbook's own "Supportive Departments" row on its Summary
-    tab is computed too (confirmed: dividing the same support total by
-    Packing's own weight-in-KG there reproduces its own "Labor Cost/Kg"
-    ratio exactly). That means Packing's and Production's own
-    overhead-loaded totals here are each independently meaningful but
-    must never be summed together -- doing so would double-count
-    Support."""
+    Support's and Maintenance & Repair's costs are NOT split between
+    Packing and Production -- each call independently adds the FULL
+    amount of both, matching how the source workbook's own "Supportive
+    Departments" row on its Summary tab is computed too for Support
+    (confirmed: dividing the same support total by Packing's own
+    weight-in-KG there reproduces its own "Labor Cost/Kg" ratio exactly).
+    That means Packing's and Production's own overhead-loaded totals
+    here are each independently meaningful but must never be summed
+    together -- doing so would double-count Support and Maintenance &
+    Repair."""
     if department not in ("Packing", "Production"):
         return None
     data = _load_all()
     dept_source = data["packing_total"] if department == "Packing" else data["production_total"]
     support_source = data["support"]
     output_key = "totalPacks" if department == "Packing" else "productionKg"
+
+    maintenance_result = compute_maintenance_repair_cost(department, unit_slug="shahi-3")
+    maintenance_by_month = (
+        {m["month"]: m["maintenanceRepairCostRs"] for m in maintenance_result["months"]}
+        if maintenance_result else {}
+    )
 
     months = []
     for month_key in sorted(set(dept_source) & set(support_source)):
@@ -519,7 +548,8 @@ def compute_shahi3_manufacturing_overhead(department: str) -> dict | None:
             continue
         dept_cost = d["totalPayroll"] + d.get("packingContractorPaymentRs", 0.0) + d["totalElectricityCostRs"]
         support_cost = (s["totalPayroll"] or 0.0) + (s["totalElectricityCostRs"] or 0.0)
-        total_cost = dept_cost + support_cost
+        maintenance_cost = maintenance_by_month.get(month_key, 0.0)
+        total_cost = dept_cost + support_cost + maintenance_cost
         months.append({
             "month": month_key,
             "monthLabel": d["monthLabel"],
@@ -527,6 +557,7 @@ def compute_shahi3_manufacturing_overhead(department: str) -> dict | None:
             "outputUnit": "Packets" if department == "Packing" else "KG",
             "departmentCostRs": round(dept_cost, 2),
             "supportCostRs": round(support_cost, 2),
+            "maintenanceRepairCostRs": round(maintenance_cost, 2),
             "totalOverheadCostRs": round(total_cost, 2),
             "costPerThousandUnits": round(total_cost / output * 1000, 2),
         })
